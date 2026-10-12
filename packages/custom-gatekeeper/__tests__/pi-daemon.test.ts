@@ -124,6 +124,9 @@ describe('HTTP fail-closed boundaries', () => {
     }
     const big = await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(100_001) }), e);
     expect(big?.status).toBe(413);
+    // An empty edge-added header carries no browser identity or Origin authority.
+    expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/claim', { method: 'POST',
+      headers: { cookie: '', origin: '' } }), e))?.status).toBe(401);
     expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/enqueue', { method: 'POST' }), e))?.status).toBe(404);
     for (const op of ['claim', 'pair', 'heartbeat']) expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST' }), e))?.status).toBe(404);
     for (const op of ['submit', 'tasks', 'cancel', 'inventory', 'pair-code']) {

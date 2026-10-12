@@ -43,7 +43,8 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
       auth = { owner: true };
     } else {
       // Pair is one-use, high-entropy authentication; all other calls require the device credential.
-      if (req.headers.has('origin') || req.headers.has('cookie')) return json({ error: 'Device route only' }, 403);
+      if (req.headers.get('origin')) return json({ error: 'Browser origin forbidden' }, 403);
+      if (req.headers.get('cookie')) return json({ error: 'Browser cookies forbidden' }, 403);
       if (op !== 'pair') {
         const token = req.headers.get('authorization')?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
         if (!token) return json({ error: 'Device authentication required' }, 401);
