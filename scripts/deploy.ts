@@ -240,6 +240,31 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
 
   validatePublicBaseUrl(config, route);
 
+  if (config.customGatekeeper.enabled !== undefined &&
+      typeof config.customGatekeeper.enabled !== "boolean") {
+    throw new Error("customGatekeeper.enabled must be a boolean.");
+  }
+  if (config.existingGatekeepers !== undefined) {
+    if (!Array.isArray(config.existingGatekeepers)) {
+      throw new Error("existingGatekeepers must be an array.");
+    }
+    const ids = new Set(["context", "scheduler", "custom"]);
+    const services = new Set(workerNames);
+    for (const gatekeeper of config.existingGatekeepers) {
+      if (!gatekeeper || typeof gatekeeper.id !== "string" ||
+          !/^[a-z][a-z0-9_]*$/.test(gatekeeper.id) || ids.has(gatekeeper.id)) {
+        throw new Error("Existing Gatekeeper IDs must be unique, non-reserved lowercase identifiers.");
+      }
+      if (typeof gatekeeper.service !== "string" ||
+          !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(gatekeeper.service) ||
+          services.has(gatekeeper.service)) {
+        throw new Error("Existing Gatekeeper services must be unique Worker names.");
+      }
+      ids.add(gatekeeper.id);
+      services.add(gatekeeper.service);
+    }
+  }
+
   const sharingDomain = config.context.sharingDomain;
   if (sharingDomain !== null &&
       (typeof sharingDomain !== "string" || !sharingDomain.trim())) {
@@ -447,7 +472,12 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     // vendor-RPC bindings. The binding name is what picks the /gatekeeper/<name> path.
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
-    { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    ...(config.customGatekeeper.enabled !== false ? [{
+      binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name,
+    }] : []),
+    ...(config.existingGatekeepers ?? []).map(({ id, service }) => ({
+      binding: `GATEKEEPER_${id.toUpperCase()}`, service,
+    })),
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -508,11 +538,14 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.scheduler.name,
       entrypoint: "GatekeeperVendor",
     },
-    {
+    ...(config.customGatekeeper.enabled !== false ? [{
       binding: "GATEKEEPER_CUSTOM",
       service: config.workers.customGatekeeper.name,
       entrypoint: "GatekeeperVendor",
-    },
+    }] : []),
+    ...(config.existingGatekeepers ?? []).map(({ id, service }) => ({
+      binding: `GATEKEEPER_${id.toUpperCase()}`, service, entrypoint: "GatekeeperVendor",
+    })),
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -604,7 +637,8 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     // The Scheduler's `build` nests the same cached `vp run build:app`, so it needs the same pair.
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
-    { args: ownBuild("custom-gatekeeper") },
+    ...(config.customGatekeeper.enabled !== false
+      ? [{ args: ownBuild("custom-gatekeeper") }] : []),
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
@@ -713,7 +747,9 @@ function reportAiGateway(config: DeploymentConfig): void {
 
 async function main(): Promise<void> {
   requireSubmodule();
-  const config = await readDeployment(join(root, "deployment.jsonc"));
+  const configPath = existsSync(join(root, "deployment.local.jsonc"))
+    ? "deployment.local.jsonc" : "deployment.jsonc";
+  const config = await readDeployment(join(root, configPath));
   const generated = generateConfigs(config, {
     router: await readJsonc(join(root, packageDirs.router, "wrangler.jsonc")),
     workshop: await readJsonc(join(root, packageDirs.workshop, "wrangler.jsonc")),
@@ -739,7 +775,9 @@ async function main(): Promise<void> {
     }
     deployWorker(packageDirs.context, deployArgs);
     deployWorker(packageDirs.scheduler, deployArgs);
-    deployWorker(packageDirs.customGatekeeper, deployArgs);
+    if (config.customGatekeeper.enabled !== false) {
+      deployWorker(packageDirs.customGatekeeper, deployArgs);
+    }
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
     deployWorker(packageDirs.router, deployArgs);

@@ -98,6 +98,41 @@ function sharingDomain(generated: GeneratedConfigs): unknown {
     .find((service) => service.binding === "GATEKEEPER_CONTEXT")!.props!.sharingDomain;
 }
 
+test("retains existing GitHub RPC and HTTP bindings without adding example integrations", async () => {
+  const config = structuredClone(validConfig);
+  config.customGatekeeper.enabled = false;
+  config.existingGatekeepers = [{ id: "github", service: "existing-github" }];
+  const generated = generateConfigs(config, await baseConfigs());
+  assert.deepEqual(generated.router.services!.find((s) => s.binding === "GATEKEEPER_GITHUB"), {
+    binding: "GATEKEEPER_GITHUB", service: "existing-github",
+  });
+  assert.deepEqual(generated.workshop.services!.find((s) => s.binding === "GATEKEEPER_GITHUB"), {
+    binding: "GATEKEEPER_GITHUB", service: "existing-github", entrypoint: "GatekeeperVendor",
+  });
+  for (const worker of [generated.router, generated.workshop]) {
+    assert.equal(worker.services!.some((s) => s.binding === "GATEKEEPER_CUSTOM"), false);
+  }
+  assert.equal(buildCommands(config).some((c) => c.args.includes("custom-gatekeeper")), false);
+});
+
+test("rejects malformed and conflicting retained Gatekeepers", () => {
+  for (const existingGatekeepers of [
+    {},
+    [null],
+    [{ id: "context", service: "existing-github" }],
+    [{ id: "GITHUB", service: "existing-github" }],
+    [{ id: "github", service: "bad/name" }],
+    [{ id: "github", service: validConfig.workers.workshop.name }],
+    [{ id: "github", service: "existing-github" }, { id: "github", service: "other-github" }],
+    [{ id: "github", service: "existing-github" }, { id: "gitlab", service: "existing-github" }],
+  ]) {
+    assert.throws(() => validateConfig(variant((c) => { c.existingGatekeepers = existingGatekeepers; })),
+      /existingGatekeepers|Existing Gatekeeper/);
+  }
+  assert.throws(() => validateConfig(variant((c) => { c.customGatekeeper.enabled = "false"; })),
+    /customGatekeeper.enabled/);
+});
+
 test("rejects deployment placeholders", () => {
   assert.throws(
     () => validateConfig(variant((c) => { c.accountId = "<CLOUDFLARE_ACCOUNT_ID>"; })),

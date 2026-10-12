@@ -29,13 +29,17 @@ export default {
     tasks: {
       build: {
         command: 'tsc',
-        input: [{ auto: true }, ownDist],
-        output: ['dist/**'],
+        cache: {
+          input: [{ auto: true }, ownDist],
+          output: ['dist/**'],
+        },
       },
       test: {
         command: 'vitest run',
-        input: [{ auto: true }, ownDist, ...vitestScratch],
-        output: [{ auto: true }, ownDist, ...vitestScratch],
+        cache: {
+          input: [{ auto: true }, ownDist, ...vitestScratch],
+          output: [{ auto: true }, ownDist, ...vitestScratch],
+        },
       },
     },
   },

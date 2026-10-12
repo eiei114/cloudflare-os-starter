@@ -14,14 +14,18 @@ export default {
     tasks: {
       build: {
         command: 'tsc',
-        input: [{ auto: true }, ownDist],
-        output: ['dist/**'],
+        cache: {
+          input: [{ auto: true }, ownDist],
+          output: ['dist/**'],
+        },
       },
       test: {
         // Narrower than `vitest run`: `src/index.ts` is a Worker entrypoint with no test of its own.
         command: 'vitest run src/format.test.ts',
-        input: [{ auto: true }, ownDist, ...vitestScratch],
-        output: [{ auto: true }, ownDist, ...vitestScratch],
+        cache: {
+          input: [{ auto: true }, ownDist, ...vitestScratch],
+          output: [{ auto: true }, ownDist, ...vitestScratch],
+        },
       },
     },
   },

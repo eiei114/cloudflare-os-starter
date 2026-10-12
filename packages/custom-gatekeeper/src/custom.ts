@@ -151,6 +151,11 @@ export class CustomAccount extends WorkerEntrypoint<Cloudflare.Env> implements G
     throw new Error("Custom Gatekeeper has no credentials to reconnect.");
   }
 
+  /** Credential-free accounts cannot activate a staged OAuth grant. */
+  commitReconnect(_stageId: string): Promise<void> {
+    throw new Error("Custom Gatekeeper has no credentials to reconnect.");
+  }
+
   async getAuthenticatedEmail(): Promise<string | null> {
     return null;
   }
