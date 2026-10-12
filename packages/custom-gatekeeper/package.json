@@ -9,6 +9,7 @@
     "test:run": "vitest run"
   },
   "dependencies": {
+    "jose": "6.1.3",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:"

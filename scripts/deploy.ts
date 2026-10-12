@@ -212,6 +212,19 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!accountIdPattern.test(config.accountId)) {
     throw new Error("Cloudflare account IDs must be 32 hexadecimal characters.");
   }
+  if (config.piRunner) {
+    if (typeof config.piRunner.enabled !== 'boolean') throw new Error('piRunner.enabled must be boolean.');
+    if (config.piRunner.enabled) {
+      if (config.customGatekeeper.enabled === false) {
+        throw new Error('Pi console requires the custom Worker to be enabled.');
+      }
+      let url: URL;
+      try { url = new URL(config.piRunner.url ?? ''); }
+      catch { throw new Error('piRunner.url must be an HTTPS origin.'); }
+      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+          url.pathname !== '/') throw new Error('piRunner.url must be an HTTPS origin without credentials or path.');
+    }
+  }
   const workerNames = Object.entries(config.workers)
     .filter(([key]) => key !== "errorReporter" || config.errorReporting.enabled)
     .map(([, worker]) => worker.name);
@@ -584,6 +597,18 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     CUSTOM_NAME: config.customGatekeeper.name,
     CUSTOM_MESSAGE: config.customGatekeeper.message,
   };
+  if (config.piRunner?.enabled) {
+    Object.assign(customGatekeeper.vars, {
+      PI_RUNNER_URL: config.piRunner.url,
+      CF_ACCESS_ISS: config.access.issuer,
+      CF_ACCESS_AUD: config.access.audience,
+      ADMINS: config.access.admins,
+      PUBLIC_BASE_URL: origin,
+    });
+    customGatekeeper.secrets = {
+      required: [...new Set([...(customGatekeeper.secrets?.required ?? []), "PI_RUNNER_TOKEN"])],
+    };
+  }
 
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);

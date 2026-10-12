@@ -1,0 +1,18 @@
+{
+  "name": "pi-runner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node --check auth-proxy.mjs && node --check run-service.mjs",
+    "test": "node --test '*.test.mjs'",
+    "start:proxy": "node auth-proxy.mjs",
+    "start:web": "node node_modules/@jmfederico/pi-web/dist/server/index.js",
+    "start:sessiond": "node node_modules/@jmfederico/pi-web/dist/server/sessiond.js"
+  },
+  "dependencies": {
+    "@jmfederico/pi-web": "1.202610.1",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-agent-core": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0"
+  }
+}

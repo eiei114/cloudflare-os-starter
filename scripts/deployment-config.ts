@@ -117,6 +117,8 @@ export interface DeploymentConfig {
   };
   access: AccessConfig;
   aiGateway: AiGatewayConfigInput;
+  /** Optional owner-only Pi human console. Token is installed as a Custom Worker secret. */
+  piRunner?: { enabled: boolean; url?: string };
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { enabled?: boolean; name: string; message: string };

@@ -121,6 +121,10 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 
 The complete control reference and recipes live in [Customization](docs/customization.md). The upstream [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) covers richer integrations.
 
+This personal fork also supports an opt-in [owner-only Mac Pi console](docs/pi-console.md),
+separate from OS chat. Publishing it grants the approved owner normal Pi/Mac privileges;
+read its authentication, billing and deployment-approval requirements first.
+
 ## Operations and upgrades
 
 - Stream production events with [`wrangler tail`](https://developers.cloudflare.com/workers/observability/logs/real-time-logs/).

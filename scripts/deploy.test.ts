@@ -115,6 +115,27 @@ test("retains existing GitHub RPC and HTTP bindings without adding example integ
   assert.equal(buildCommands(config).some((c) => c.args.includes("custom-gatekeeper")), false);
 });
 
+test("Pi console is opt-in, owner-authenticated and requires a separate proxy secret", async () => {
+  const base = await baseConfigs();
+  const disabled = generateConfigs(validConfig, base);
+  assert.equal(disabled.customGatekeeper.vars!.PI_RUNNER_URL, undefined);
+  const config = variant(c => { c.piRunner = { enabled: true, url: "https://private-tunnel.example" }; });
+  const enabled = generateConfigs(config, base);
+  assert.equal(enabled.customGatekeeper.vars!.PI_RUNNER_URL, "https://private-tunnel.example");
+  assert.equal(enabled.customGatekeeper.vars!.PUBLIC_BASE_URL, "https://os.example.com");
+  assert.equal(enabled.customGatekeeper.vars!.CF_ACCESS_ISS, config.access.issuer);
+  assert.equal(enabled.customGatekeeper.vars!.CF_ACCESS_AUD, config.access.audience);
+  assert.deepEqual(enabled.customGatekeeper.vars!.ADMINS, config.access.admins);
+  assert.ok(enabled.customGatekeeper.secrets!.required.includes("PI_RUNNER_TOKEN"));
+  assert.equal(JSON.stringify(enabled).includes("CURSOR_API_KEY"), false);
+  for (const url of ["http://example.com", "https://example.com/path", "https://u:p@example.com", "https://example.com?q=1"]) {
+    assert.throws(() => validateConfig(variant(c => { c.piRunner = { enabled: true, url }; })));
+  }
+  assert.throws(() => validateConfig(variant(c => {
+    c.piRunner = { enabled: true, url: "https://example.com" }; c.customGatekeeper.enabled = false;
+  })));
+});
+
 test("rejects malformed and conflicting retained Gatekeepers", () => {
   for (const existingGatekeepers of [
     {},
