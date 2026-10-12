@@ -1,6 +1,6 @@
 # Outbound Pi daemon MVP
 
-Implementation only. **Not deployed, paired, or installed as a service. Windows native execution remains untested.** The existing Mac human console and Multica installation are unchanged.
+Production rollout has started: the private Worker queue and dedicated Access service transport are deployed, one Mac is paired, and native Pi/Cursor inference has been verified without file operations. The owner kanban board and login service are being verified next. **Windows native execution remains untested.** The existing Mac human console and Multica installation are unchanged. This runbook describes the supported setup; rollout-specific versions and evidence belong in the operator's private deployment record.
 
 ## Reference and scope
 
@@ -13,9 +13,9 @@ This is an independent implementation of those lifecycle concepts, **not a copy,
 
 Included: pairing/revocation, project registration, outbound HTTP polling, one in-flight job per device, fenced 45-second leases, bounded progress, final report, cooperative cancellation and durable receipt/outbox. Unlike broader Multica recovery, an unknown attempt is never automatically reassigned/re-executed. An uncertain task quarantines its device from further claims.
 
-Included owner task management: creation with explicit approval, bounded task list, stage/status polling, selected final answer, and cancellation request at `/gatekeeper/custom/runner/`. Cloudflare OS owns the queue and task lifecycle; the daemon only executes. Owner UI submissions are marked `owner-ui`, agent-approved submissions `os-approval`. This is a first task-management slice, not a full Multica issue tracker.
+Included owner task management: Japanese kanban cards, optional titles, creation with explicit approval, stage/status polling, selected final answer, and cancellation request at `/gatekeeper/custom/runner/`. Columns are queued, running, review, done and attention. Completed execution enters review; the owner marks it done after checking the result. `reviewedAt` is a separate acknowledgement, never an execution-status rewrite or permission to replay uncertain work. Title/review metadata remains on the owner surface; the agent API is unchanged. Cloudflare OS owns the queue and task lifecycle; the daemon only executes. Owner UI submissions are marked `owner-ui`, agent-approved submissions `os-approval`. This is a first task-management slice, not a full Multica issue tracker.
 
-Excluded: issue hierarchy, squads, repo cloning/worktrees, WebSocket wakeups, updater, credential synchronization, generic shell API, sandbox, recovery/archival UI and multi-user hosting. MVP caps: 20 devices total, 20 projects total and 100 retained tasks. Exhausting a limit fails closed; archival is a later implementation, not an existing command.
+Excluded: backlog/drafts, drag-and-drop status overrides, issue hierarchy, squads, repo cloning/worktrees, WebSocket wakeups, updater, credential synchronization, generic shell API, sandbox, recovery/archival UI and multi-user hosting. MVP caps: 20 devices total, 20 projects total and 100 retained tasks. Exhausting a limit fails closed; archival is a later implementation, not an existing command.
 
 ## Flow and authority
 
@@ -39,7 +39,7 @@ The human owner portal is a separate authenticated approval surface. `submit` re
 
 **Single-owner private deployment only**: enabling requires one administrator; the Access policy must also admit only that owner (plus the narrowly approved daemon service identity). The credential-free Custom account does not provide tenant isolation. Do not enable this MVP on a public/multi-member OS deployment. Project lookup is through the opaque `pi-project://projects/<uuid>` URL copied from the owner portal; a resource picker is not included.
 
-## Deployment gate — not performed
+## Deployment gate
 
 Enable only after a separate production mutation review:
 
@@ -51,9 +51,9 @@ This adds `PI_COORDINATOR` and migration `pi-daemon-v1` for `PiCoordinator` / `P
 
 Device requests do **not** magically pass the existing interactive Cloudflare Access policy. They use only `/gatekeeper/custom/runner/device/*`; the owner portal, task management, pairing-code creation and revocation remain outside that path, under the original owner Access application/audience. The old unprefixed device endpoints return 404.
 
-Production transport plan: one additional path-specific self-hosted Access application, with a **Service Auth** policy admitting only the dedicated daemon service token. More-specific Access applications do not inherit the root application policy. Do not attach the token to the whole OS app, use Bypass/Everyone, or change the original audience/admin policy. The client sends local `accessClientId` / `accessClientSecret` on every request; these are separate from the device bearer. New Access service secrets may use the `cfast_` format; do not require legacy hexadecimal format. **No Access policy/service token has been created. Do not put service credentials in the repository.** Keep the private Custom Worker workers.dev and preview routes disabled.
+Production transport: one additional path-specific self-hosted Access application, with a **Service Auth** policy admitting only the dedicated daemon service token. More-specific Access applications do not inherit the root application policy. Do not attach the token to the whole OS app, use Bypass/Everyone, or change the original audience/admin policy. The client sends local `accessClientId` / `accessClientSecret` on every request; these are separate from the device bearer. New Access service secrets may use the `cfast_` format; do not require legacy hexadecimal format. **Service credentials stay in private local configuration, never the repository.** Keep the private Custom Worker workers.dev and preview routes disabled.
 
-Before rollout: review exact commits, Worker identities, migrations, owner/Access policy, credential scope, costs, data retention and rollback. A rollback of code does not undo created DO storage or local Pi effects. Stop/revoke all devices before rolling back; preserve receipts and DO data. No secret installation, production migration, pairing or daemon startup occurred here.
+Before rollout: review exact commits, Worker identities, migrations, owner/Access policy, credential scope, costs, data retention and rollback. A rollback of code does not undo created DO storage or local Pi effects. Stop/revoke all devices before rolling back; preserve receipts and DO data. Never delete storage or an interrupted receipt as automatic cleanup.
 
 ## One-time local setup (after rollout approval)
 
@@ -101,7 +101,7 @@ node packages/pi-daemon/install.mjs stop
 node packages/pi-daemon/install.mjs start
 ```
 
-- macOS: separate LaunchAgent `com.eisuke.pi-daemon`, RunAtLoad; no overwrite of existing services and no KeepAlive restart storm.
+- macOS: separate LaunchAgent `com.eisuke.pi-daemon`, RunAtLoad; no overwrite of existing services and no KeepAlive restart storm. Capture only the install-time command-search `PATH` for local tools, not arbitrary environment variables or secrets. Reinstall/review this path after moving toolchains.
 - Windows: user logon Scheduled Task, Interactive / Limited, no SYSTEM/elevation; quoted executable/path arguments without a shell.
 - State: Mac `~/Library/Application Support/eisuke-os-pi-daemon`; Windows `%LOCALAPPDATA%\\CloudflareOSPiDaemon`. POSIX parent 0700/files 0600; Windows state directory has a current-user DACL with inheritance removed. Native Windows ACL/scheduler behavior remains a rollout verification item.
 - `stop` writes a private stop request. The loop acknowledges it (normally within a heartbeat cycle, possibly longer during a network timeout), aborts its own Pi RPC process, and releases its lock. It is not a global process killer. Wait for `daemon.lock` to disappear. Foreground Ctrl-C/SIGTERM uses the same stop path. `start` clears the stop request.
@@ -123,4 +123,4 @@ Automated: deployment-config opt-in/noninterference test; real workerd DO/facet 
 
 Current Cloudflare references: [application path precedence](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/), [service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/), [Worker rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
-`pnpm check` runs the full tests/builds and Wrangler dry-runs with daemon enabled in ignored local configuration. `pnpm lint:check` and TypeScript checks also run. This does **not** verify real Cursor inference, Windows SDK/runtime/ACL/Scheduled Tasks, native extension prompts, production Access transport or end-to-end OS agent execution. No paid model probe was performed for this MVP.
+`pnpm check` runs the full tests/builds and Wrangler dry-runs with daemon enabled in ignored local configuration. `pnpm lint:check` and TypeScript checks also run. Automated evidence alone does **not** verify Windows SDK/runtime/ACL/Scheduled Tasks, native extension prompts, production Access transport or end-to-end OS agent execution. Native Mac Cursor and production transport have separate live evidence; keep each tested boundary distinct in the deployment record.

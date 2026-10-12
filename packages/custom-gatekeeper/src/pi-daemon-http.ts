@@ -28,7 +28,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
   const isDevice = path.startsWith('device/');
   const op = isDevice ? path.slice('device/'.length) : path;
   const deviceOps = ['pair', 'catalog', 'claim', 'heartbeat', 'finish'];
-  const ownerOps = ['', 'pair-code', 'inventory', 'revoke', 'tasks', 'task', 'submit', 'cancel'];
+  const ownerOps = ['', 'pair-code', 'inventory', 'revoke', 'tasks', 'task', 'submit', 'cancel', 'review'];
   if (!(isDevice ? deviceOps : ownerOps).includes(op)) return json({ error: 'Not found' }, 404);
   if (req.method !== (op === '' ? 'GET' : 'POST')) return json({ error: 'Method not allowed' }, 405);
   try {
@@ -100,7 +100,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
       // Ignore caller-supplied source/auth fields. Agent submissions still use ApprovalQueue.
       if (data.approved !== true) return json({ error: 'Explicit owner approval required' }, 400);
       const task = await callCoordinator(env, 'enqueue', { id: data.id, projectId: data.projectId,
-        prompt: data.prompt, model: data.model, source: 'owner-ui' }, auth);
+        prompt: data.prompt, model: data.model, title: data.title, source: 'owner-ui' }, auth);
       return json({ id: task.id, projectId: task.projectId, status: task.status });
     }
     // Never let request data select owner authority or change its token identity.
@@ -116,52 +116,67 @@ function randomToken(): string {
 
 function portal(): Response {
   const nonce = randomToken();
-  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Cloudflare OS — Pi tasks</title>
-<style nonce="${nonce}">body{font:16px system-ui;max-width:1100px;margin:2rem auto;padding:0 1rem}label{display:block;margin:.6rem 0}button{margin:.4rem;padding:.6rem}textarea{display:block;width:95%;min-height:8rem}table{border-collapse:collapse;width:100%}td,th{padding:.5rem;text-align:left;border-bottom:1px solid #999}pre{white-space:pre-wrap;overflow-wrap:anywhere}input,select{padding:.4rem}summary{cursor:pointer}#message{min-height:1.5rem}</style>
-<h1>Cloudflare OS — Pi tasks</h1>
-<p>Manage tasks here. Your registered computer runs native Pi in the background. This does not migrate Multica tasks.</p>
-<section aria-labelledby="create-title"><h2 id="create-title">Create task</h2>
-<label>Registered project <select id="project"></select></label>
-<label>Allowed model <select id="model"></select></label>
-<label>Task prompt <textarea id="prompt" maxlength="32000"></textarea></label>
-<p>Approval runs Pi with this computer's normal filesystem, network, extensions and provider authority. Not a sandbox. Prompts and final answers are stored in Cloudflare. Provider charges may apply.</p>
-<button id="submit">Approve and run task</button></section>
+  return new Response(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>タスクボード — Cloudflare OS</title>
+<style nonce="${nonce}">
+*{box-sizing:border-box}body{font:15px/1.6 system-ui;color:#18212f;background:#f5f7fa;margin:0;padding:2rem;max-width:1600px;margin-inline:auto}h1,h2,h3{line-height:1.3}header{border-left:5px solid #ee6b22;padding-left:1rem}header p{color:#526074}a{color:#a83e08}label{display:block;margin:.6rem 0}button{font:inherit;border:1px solid #cbd2dd;border-radius:7px;background:white;padding:.55rem .8rem;cursor:pointer}button:hover{background:#edf1f8}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #e46420;outline-offset:2px}button:disabled{cursor:wait;opacity:.6}input,select,textarea{font:inherit;padding:.6rem;border:1px solid #bec8d6;border-radius:6px;max-width:100%;background:white}textarea{display:block;width:100%;min-height:7rem}summary{cursor:pointer;font-weight:600}.compose{background:white;padding:1rem 1.4rem;border:1px solid #dce2eb;border-radius:12px;margin:1.5rem 0}.fields{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.hint{font-size:.85rem;color:#526074}.primary{background:#c94c0c;color:white;border-color:#c94c0c}.primary:hover{background:#a83e08}#message{min-height:1.5rem}.board-scroll{overflow-x:auto;padding-bottom:1rem}.board{display:grid;grid-template-columns:repeat(5,minmax(240px,1fr));gap:1rem;min-width:1240px}.column{background:#e9edf3;border:1px solid #d7deea;border-radius:10px;padding:.75rem;min-height:14rem}.column h3{font-size:1rem;display:flex;justify-content:space-between;gap:.5rem;margin:.3rem 0 1rem}.count{font-size:.8rem;border-radius:20px;background:white;padding:0 .6rem}.card{background:white;border:1px solid #d4dce8;border-radius:9px;padding:1rem;margin-bottom:.75rem;box-shadow:0 2px 5px #18212f0a;overflow-wrap:anywhere}.card h4{font-size:1rem;margin:0 0 .7rem}.card p{margin:.35rem 0}.meta,.task-id{font-size:.78rem;color:#526074}.badge{font-size:.78rem;background:#edf1f8;border-radius:5px;padding:.15rem .45rem;display:inline-block}.card .actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.8rem}.card button{font-size:.8rem;padding:.35rem .6rem}.empty{color:#657389;font-size:.9rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:1rem;border-radius:8px;border:1px solid #dce2eb}#result:empty{display:none}details.devices{margin-top:2rem;padding:1rem;background:white;border:1px solid #dce2eb;border-radius:10px}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:1rem}@media(max-width:700px){body{padding:1rem}.fields{grid-template-columns:1fr;gap:0}.compose{padding:1rem}}
+</style>
+<header><h1>Cloudflare OS <span class="hint">/ タスクボード</span></h1>
+<p>ここでタスクを作成・承認・確認。登録端末のPiが裏で実行します。<a href="/">OSホーム</a></p></header>
+<details class="compose" open><summary>新しいタスク</summary><section aria-labelledby="create-title"><h2 id="create-title">タスクを作成</h2>
+<label>タイトル <input id="title" maxlength="100" placeholder="例：ログイン画面の表示を直す"></label>
+<div class="fields"><label>実行先プロジェクト <select id="project"></select></label>
+<label>モデル <select id="model"></select></label></div>
+<label>指示 <textarea id="prompt" maxlength="32000" placeholder="何をしてほしいか、完了条件を書いてください"></textarea></label>
+<p class="hint">Piは端末の通常の設定・認証・拡張・ファイル操作権限を使います。サンドボックスではありません。指示と最終回答はCloudflareに保存され、モデルの利用料金が発生する場合があります。</p>
+<button class="primary" id="submit">承認して実行待ちに追加</button></section></details>
 <p id="message" role="status"></p>
-<section aria-labelledby="tasks-title"><h2 id="tasks-title">Tasks</h2><button id="tasks-refresh">Refresh tasks</button>
-<p>100 retained tasks maximum in this MVP. No automatic retry of uncertain tasks; inspect the execution computer. Cancellation does not undo side effects.</p>
-<table><thead><tr><th scope="col">Task / project</th><th scope="col">Status / progress</th><th scope="col">Model / approval</th><th scope="col">Actions</th></tr></thead><tbody id="tasks"></tbody></table>
-<h3>Selected task result</h3><pre id="result" aria-live="polite"></pre></section>
-<details><summary>Devices and pairing</summary><h2>Local Pi devices — owner only</h2>
-<p>Pair once per computer. Pi runs with your normal local account authority, not a sandbox. Never copy model keys here.</p>
-<label>Device label <input id="label" maxlength="80"></label>
-<label>Platform <select id="platform"><option>darwin</option><option>win32</option></select></label>
-<button id="pair">Create 5-minute one-use code</button><pre id="code"></pre>
-<button id="refresh">Refresh devices and project URLs</button><pre id="inventory"></pre>
-<label>Device ID to revoke <input id="device"></label><button id="revoke">Revoke device</button></details>
+<section aria-labelledby="tasks-title"><div class="toolbar"><h2 id="tasks-title">タスク</h2><button id="tasks-refresh">ボードを更新</button></div>
+<p class="hint">10秒ごとに更新。端末は起動・接続が必要です。現在の保存上限は100件。結果が不確定なタスクは自動再実行せず、端末側で確認してください。取消は実行済みの変更を元に戻しません。既存Multicaのタスクは別管理です。</p>
+<div class="board-scroll" tabindex="0" aria-label="タスクボード。横スクロールできます"><div class="board" id="tasks"></div></div>
+<h3 id="result-title">カードを選んで結果を確認</h3><pre id="result" aria-live="polite"></pre></section>
+<details class="devices"><summary>実行端末と接続設定</summary><h2>端末の登録 — 所有者専用</h2>
+<p class="hint">端末ごとに一度だけ登録します。モデルのAPIキーはここへ入力しないでください。</p>
+<label>端末名 <input id="label" maxlength="80"></label>
+<label>OS <select id="platform"><option>darwin</option><option>win32</option></select></label>
+<button id="pair">5分間有効な登録コードを作成</button><button id="copy-code">登録コードをコピー</button><pre id="code"></pre>
+<button id="refresh">端末とプロジェクトを更新</button><pre id="inventory"></pre>
+<label>登録を解除する端末ID <input id="device"></label><button id="revoke">端末登録を解除</button></details>
 <script nonce="${nonce}">
 const el=id=>document.getElementById(id);
-let projects=[],submissionId=null;
+let projects=[],submissionId=null,snapshot='',selectedTask=null;
 async function call(op,data){const r=await fetch('./'+op,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});const v=await r.json();if(!r.ok)throw Error('Request rejected');return v;}
 function option(select,value,label){const o=document.createElement('option');o.value=value;o.textContent=label;select.append(o);}
 function models(reset=true){const selected=el('model').value;el('model').replaceChildren();for(const m of projects.find(p=>p.id===el('project').value)?.models||[])option(el('model'),m,m);if(!reset&&[...el('model').options].some(o=>o.value===selected))el('model').value=selected;if(reset)submissionId=null;}
 async function refresh(){const v=await call('inventory',{});projects=v.projects.filter(p=>v.devices.some(d=>d.id===p.deviceId&&!d.revoked));el('inventory').textContent=JSON.stringify({devices:v.devices,projects:v.projects.map(p=>({...p,url:'pi-project://projects/'+p.id}))},null,2);
-const selected=el('project').value;el('project').replaceChildren();for(const p of projects)option(el('project'),p.id,p.alias+' — '+v.devices.find(d=>d.id===p.deviceId)?.label);if(projects.some(p=>p.id===selected))el('project').value=selected;models(false);await tasks();}
-async function tasks(){const v=await call('tasks',{});el('tasks').replaceChildren();for(const t of v.tasks){const row=document.createElement('tr');const p=projects.find(p=>p.id===t.projectId);for(const value of [t.id+' / '+(p?.alias||t.projectId),t.status+' / '+(t.progress||'—'),t.model+' / '+(t.source||'os-approval')]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}const actions=document.createElement('td');
-const show=document.createElement('button');show.textContent='View result';show.onclick=()=>view(t).catch(rejected);actions.append(show);
-if(['queued','running','cancel-requested'].includes(t.status)){const cancel=document.createElement('button');cancel.textContent='Request cancellation';cancel.onclick=async()=>{if(!confirm('Cancel task '+t.id+'? Completed side effects cannot be undone.'))return;try{await call('cancel',{id:t.id,projectId:t.projectId});await tasks();await view(t);}catch{rejected();}};actions.append(cancel);}row.append(actions);el('tasks').append(row);}}
-async function view(t){const v=await call('task',{id:t.id,projectId:t.projectId});el('result').textContent=JSON.stringify(v,null,2);}
-function rejected(){el('message').textContent='Request rejected. Refresh state before retrying.';}
-function on(id,fn){el(id).onclick=()=>fn().catch(()=>el('message').textContent='Request rejected.');}
-el('project').onchange=()=>models();el('model').onchange=el('prompt').oninput=()=>submissionId=null;
-on('submit',async()=>{const projectId=el('project').value,model=el('model').value,prompt=el('prompt').value;
-if(!projectId||!model||!prompt.trim())return el('message').textContent='Choose a project and model, then enter a task.';
-if(new TextEncoder().encode(prompt).length>32000)return el('message').textContent='Prompt exceeds 32,000 UTF-8 bytes.';
-if(!confirm('Approve execution on '+el('project').selectedOptions[0].textContent+' using '+model+'? Pi can modify files and call external services.'))return;
-submissionId??=crypto.randomUUID();for(const id of ['submit','project','model','prompt','refresh'])el(id).disabled=true;try{const t=await call('submit',{id:submissionId,projectId,model,prompt,approved:true});submissionId=null;el('prompt').value='';el('message').textContent='Task '+t.id+' queued. The registered computer must be online.';await tasks();}finally{for(const id of ['submit','project','model','prompt','refresh'])el(id).disabled=false;}});
+const selected=el('project').value;el('project').replaceChildren();for(const p of projects)option(el('project'),p.id,p.alias+' — '+v.devices.find(d=>d.id===p.deviceId)?.label);if(projects.some(p=>p.id===selected))el('project').value=selected;models(false);snapshot='';await tasks();}
+const columns=[['queued','実行待ち'],['running','実行中'],['review','確認待ち'],['done','完了'],['attention','停止・要対応']];
+const statuses={queued:'実行待ち',running:'実行中','cancel-requested':'取消依頼中',completed:'実行完了',failed:'失敗',cancelled:'取消済み',uncertain:'結果不確定'};
+const stages={starting:'起動中',thinking:'応答生成中',tool:'ツール実行中',settled:'応答確定',stopping:'停止中'};
+const column=t=>t.status==='completed'?(t.reviewedAt?'done':'review'):['running','cancel-requested'].includes(t.status)?'running':t.status==='queued'?'queued':'attention';
+const taskTitle=t=>t.title||'タスク '+t.id.slice(0,8);
+function node(tag,text,className){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(className)n.className=className;return n;}
+function action(parent,label,t,fn){const b=node('button',label);b.setAttribute('aria-label',taskTitle(t)+'：'+label);b.onclick=()=>fn().catch(rejected);parent.append(b);}
+async function tasks(){const v=await call('tasks',{});const next=JSON.stringify(v.tasks);if(next===snapshot)return;snapshot=next;el('tasks').replaceChildren();
+for(const [key,label] of columns){const section=node('section',undefined,'column');section.dataset.column=key;section.setAttribute('aria-label',label);const items=v.tasks.filter(t=>column(t)===key);const heading=node('h3',label);heading.append(node('span',String(items.length),'count'));section.append(heading);
+for(const t of items){const card=node('article',undefined,'card');card.dataset.taskId=t.id;card.setAttribute('aria-label',taskTitle(t));card.append(node('h4',taskTitle(t)));card.append(node('p',projects.find(p=>p.id===t.projectId)?.alias||t.projectId,'meta'));card.append(node('p',(statuses[t.status]||t.status)+(t.progress&&['running','cancel-requested'].includes(t.status)?' · '+(stages[t.progress]||t.progress):''),'badge'));card.append(node('p',t.model,'meta'));card.append(node('p',t.source==='owner-ui'?'手動承認':'OS Agent承認','meta'));card.append(node('p',t.id,'task-id'));const buttons=node('div',undefined,'actions');action(buttons,'結果を見る',t,()=>view(t));
+if(['queued','running','cancel-requested'].includes(t.status))action(buttons,'取消を依頼',t,async()=>{if(!confirm(taskTitle(t)+'を取り消しますか？ 実行済みの変更は元に戻りません。'))return;await call('cancel',{id:t.id,projectId:t.projectId});await tasks();await view(t);});
+if(t.status==='completed'&&!t.reviewedAt)action(buttons,'確認して完了',t,async()=>{await view(t);if(!confirm(taskTitle(t)+'の結果を確認済みとして完了に移しますか？'))return;await call('review',{id:t.id,projectId:t.projectId});await tasks();});
+card.append(buttons);section.append(card);}if(!items.length)section.append(node('p','タスクはありません','empty'));el('tasks').append(section);}
+if(selectedTask)await view(selectedTask);}
+async function view(t){selectedTask=t;const v=await call('task',{id:t.id,projectId:t.projectId});el('result-title').textContent=taskTitle(t)+' — '+(statuses[v?.status]||'結果を取得できません');el('result').textContent=JSON.stringify(v,null,2);}
+function rejected(){el('message').textContent='処理が拒否されました。状態を更新してから確認してください。';}
+function on(id,fn){el(id).onclick=()=>fn().catch(rejected);}
+el('project').onchange=()=>models();el('title').oninput=el('model').onchange=el('prompt').oninput=()=>submissionId=null;
+on('submit',async()=>{const projectId=el('project').value,model=el('model').value,prompt=el('prompt').value,title=el('title').value.trim()||undefined;
+if(!projectId||!model||!prompt.trim())return el('message').textContent='プロジェクトとモデルを選び、指示を入力してください。';
+if(new TextEncoder().encode(prompt).length>32000||title&&new TextEncoder().encode(title).length>200)return el('message').textContent='指示は32,000 UTF-8 bytes、タイトルは200 bytes以内にしてください。';
+if(!confirm(el('project').selectedOptions[0].textContent+'で '+model+'を使って実行しますか？ Piにはファイル変更・外部サービスの操作権限があります。'))return;
+submissionId??=crypto.randomUUID();for(const id of ['submit','title','project','model','prompt','refresh'])el(id).disabled=true;try{const t=await call('submit',{id:submissionId,projectId,model,prompt,title,approved:true});submissionId=null;el('prompt').value='';el('title').value='';el('message').textContent='タスク '+t.id+'を実行待ちに追加しました。';await tasks();}finally{for(const id of ['submit','title','project','model','prompt','refresh'])el(id).disabled=false;}});
 on('tasks-refresh',tasks);
-on('pair',async()=>{const v=await call('pair-code',{label:el('label').value,platform:el('platform').value});el('code').textContent=v.code;setTimeout(()=>el('code').textContent='',300000);});
-on('refresh',refresh);on('revoke',async()=>{if(!confirm('Revoke this device? Running tasks become uncertain. Inspect local side effects.'))return;await call('revoke',{deviceId:el('device').value});await refresh();});
+on('pair',async()=>{const v=await call('pair-code',{label:el('label').value,platform:el('platform').value});el('code').textContent=v.code;el('message').textContent='登録コードを作成しました。秘密のまま端末へ入力してください。';setTimeout(()=>el('code').textContent='',300000);});
+on('copy-code',async()=>{if(!el('code').textContent)return;await navigator.clipboard.writeText(el('code').textContent);el('message').textContent='登録コードをコピーしました。使用後はクリップボードを消してください。';});
+on('refresh',refresh);on('revoke',async()=>{if(!confirm('端末登録を解除しますか？ 実行中のタスクは不確定となり、端末側の確認が必要です。'))return;await call('revoke',{deviceId:el('device').value});await refresh();});
 refresh().catch(rejected);
 setInterval(()=>{if(!document.hidden)tasks().catch(rejected);},10000);
 </script></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',

@@ -9,10 +9,11 @@ const label = 'com.eisuke.pi-daemon';
 const xml = s => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 const ps = s => `'${s.replaceAll("'", "''")}'`;
 const run = (exe, args) => { const r = spawnSync(exe, args, { stdio: 'inherit', shell: false }); if (r.status !== 0) throw new Error('Service operation failed'); };
-export function macPlist(node, script, dir) {
+export function macPlist(node, script, dir, searchPath = process.env.PATH ?? `${path.dirname(node)}:/usr/bin:/bin:/usr/sbin:/sbin`) {
   return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
 <key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(script)}</string><string>run</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><false/>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(searchPath)}</string></dict>
 <key>StandardOutPath</key><string>${xml(path.join(dir, 'service.log'))}</string><key>StandardErrorPath</key><string>${xml(path.join(dir, 'service-error.log'))}</string>
 </dict></plist>`;
 }

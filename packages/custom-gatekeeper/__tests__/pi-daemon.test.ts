@@ -80,6 +80,22 @@ describe('daemon state protocol', () => {
     for (const field of ['prompt', 'result', 'attempt', 'leaseUntil']) expect(list.tasks[0]).not.toHaveProperty(field);
     expect(() => transition(s, 'tasks', {}, auth, 7)).toThrow();
   });
+  it('kanban review is owner-only, idempotent and never rewrites execution status', () => {
+    const { s, projectId, auth } = setup();
+    const data = { id: 'board-task', projectId, model: 'cursor/model', prompt: 'test', title: '<unsafe title>', source: 'owner-ui' };
+    transition(s, 'enqueue', data, owner, 4);
+    expect(() => transition(s, 'enqueue', { ...data, title: 'changed' }, owner, 4)).toThrow();
+    expect(() => transition(s, 'review', data, owner, 5)).toThrow();
+    transition(s, 'claim', { attempt: 'a' }, auth, 5);
+    transition(s, 'finish', { id: data.id, attempt: 'a', status: 'completed', result: 'ok' }, auth, 6);
+    expect(() => transition(s, 'review', data, auth, 7)).toThrow();
+    transition(s, 'review', data, owner, 7); transition(s, 'review', data, owner, 8);
+    expect(s.tasks[0]).toMatchObject({ status: 'completed', title: '<unsafe title>', reviewedAt: 7 });
+    expect(transition(s, 'task', data, owner, 8)).not.toHaveProperty('reviewedAt');
+    expect(transition(s, 'task', data, owner, 8)).not.toHaveProperty('title');
+    expect((transition(s, 'tasks', {}, owner, 8) as any).tasks[0]).toMatchObject({ reviewedAt: 7 });
+    expect(transition(s, 'claim', { attempt: 'new' }, auth, 8)).toEqual({ task: null });
+  });
 });
 
 const testEnv = env as unknown as { PI_COORDINATOR: DurableObjectNamespace<PiCoordinator>;
@@ -129,7 +145,7 @@ describe('HTTP fail-closed boundaries', () => {
       headers: { cookie: '', origin: '' } }), e))?.status).toBe(401);
     expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/enqueue', { method: 'POST' }), e))?.status).toBe(404);
     for (const op of ['claim', 'pair', 'heartbeat']) expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST' }), e))?.status).toBe(404);
-    for (const op of ['submit', 'tasks', 'cancel', 'inventory', 'pair-code']) {
+    for (const op of ['submit', 'tasks', 'cancel', 'review', 'inventory', 'pair-code']) {
       expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/' + op, { method: 'POST' }), e))?.status).toBe(404);
       expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST',
         headers: { origin: base, authorization: 'Bearer ' + 'a'.repeat(64) } }), e))?.status).toBe(403);
@@ -193,7 +209,9 @@ describe('owner portal and observation enforcement', () => {
     expect(portal?.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     expect(portal?.headers.get('cache-control')).toBe('no-store');
     const html = await portal!.text();
-    expect(html).toContain('Approve and run task');
+    expect(html).toContain('承認して実行待ちに追加');
+    expect(html).toContain('タスクボード');
+    for (const label of ['実行待ち', '実行中', '確認待ち', '完了', '停止・要対応']) expect(html).toContain(label);
     expect(html).not.toContain('innerHTML');
     // Parse the actual emitted owner script, not a separately maintained copy.
     expect(() => new Function(html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)![1])).not.toThrow();
@@ -202,15 +220,16 @@ describe('owner portal and observation enforcement', () => {
     const post = (op: string, body: unknown, origin = e.PUBLIC_BASE_URL) => fetchPiDaemon(new Request(
       e.PUBLIC_BASE_URL + '/gatekeeper/custom/runner/' + op, { method: 'POST',
         headers: { 'cf-access-jwt-assertion': jwt, origin, 'content-type': 'application/json' }, body: JSON.stringify(body) }), e);
-    const task = { id: crypto.randomUUID(), projectId, model: 'cursor/model', prompt: 'owner test', approved: true };
+    const task = { id: crypto.randomUUID(), projectId, model: 'cursor/model', prompt: 'owner test', title: 'Owner test', approved: true };
     expect((await post('submit', { ...task, approved: false }))?.status).toBe(400);
     expect((await post('submit', task, 'https://evil.example'))?.status).toBe(403);
     expect((await post('submit', { ...task, model: 'openai/not-allowed' }))?.status).toBe(400);
     expect((await post('submit', task))?.status).toBe(200);
     expect((await post('submit', task))?.status).toBe(200);
+    expect((await post('review', task))?.status).toBe(400);
     const list = await (await post('tasks', {}))!.json() as any;
     expect(list.tasks.filter((t: any) => t.id === task.id)).toHaveLength(1);
-    expect(list.tasks.find((t: any) => t.id === task.id)).toMatchObject({ source: 'owner-ui', status: 'queued' });
+    expect(list.tasks.find((t: any) => t.id === task.id)).toMatchObject({ source: 'owner-ui', status: 'queued', title: 'Owner test' });
     expect((await post('cancel', task))?.status).toBe(200);
     expect(await (await post('task', task))!.json()).toMatchObject({ status: 'cancelled' });
     const serviceJwt = await new SignJWT({ type: 'app', common_name: 'service-token' })

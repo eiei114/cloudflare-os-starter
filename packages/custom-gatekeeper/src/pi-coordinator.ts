@@ -7,6 +7,8 @@ export type TaskRecord = {
   attempt?: string; leaseUntil?: number; progress?: string; result?: string;
   createdAt?: number;
   source?: 'owner-ui' | 'os-approval';
+  title?: string;
+  reviewedAt?: number;
 };
 type Device = { id: string; label: string; platform: string; tokenHash: string; revoked: boolean; seen: number };
 export type CoordinatorState = {
@@ -70,7 +72,8 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       // Caller supplies a durable id: retrying approval cannot create a second job.
       const prior = s.tasks.find(t => t.id === data.id);
       if (prior) {
-        if (prior.projectId !== data.projectId || prior.prompt !== data.prompt || prior.model !== data.model)
+        if (prior.projectId !== data.projectId || prior.prompt !== data.prompt || prior.model !== data.model ||
+            (prior.title ?? '') !== (data.title ?? ''))
           throw new Error('Task id collision');
         return prior;
       }
@@ -81,11 +84,12 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       if (s.tasks.length >= 100) throw new Error('MVP task history limit; archive support required before accepting more');
       const t: TaskRecord = { id: text(data.id, 64), projectId: p.id,
         prompt: text(data.prompt, 32_000), model: model as string, status: 'queued', createdAt: now,
-        source: data.source === 'owner-ui' ? 'owner-ui' : 'os-approval' };
+        source: data.source === 'owner-ui' ? 'owner-ui' : 'os-approval',
+        ...(data.title === undefined ? {} : { title: text(data.title, 200) }) };
       s.tasks.push(t);
       return t;
     }
-    if (op === 'task' || op === 'cancel') {
+    if (op === 'task' || op === 'cancel' || op === 'review') {
       const t = s.tasks.find(candidate => candidate.id === data.id && candidate.projectId === data.projectId);
       if (!t && op === 'task') return null;
       if (!t) throw new Error('Unknown task');
@@ -93,7 +97,12 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
         if (t.status === 'queued') t.status = 'cancelled';
         if (t.status === 'running') t.status = 'cancel-requested';
       }
-      const { prompt: _, attempt: __, leaseUntil: ___, createdAt: ____, ...status } = t;
+      if (op === 'review') {
+        // Human acknowledgement only. Never rewrite execution status or clear uncertainty.
+        if (t.status !== 'completed') throw new Error('Only completed execution may be reviewed');
+        t.reviewedAt ??= now;
+      }
+      const { prompt: _, attempt: __, leaseUntil: ___, createdAt: ____, title: _____, reviewedAt: ______, ...status } = t;
       return status;
     }
   }

@@ -14,6 +14,9 @@ test('macOS/Windows native paths and unprivileged startup quoting', () => {
   assert.equal(stateDirectory('win32', { LOCALAPPDATA: 'C:\\Users\\A B\\AppData\\Local' }), 'C:\\Users\\A B\\AppData\\Local\\CloudflareOSPiDaemon');
   assert.match(stateDirectory('darwin', {}, '/Users/A B'), /Application Support/);
   assert.match(macPlist('/node', '/a&b/daemon.mjs', '/state'), /a&amp;b/);
+  const plist = macPlist('/node', '/daemon.mjs', '/state', '/opt/tools&bin:/usr/bin');
+  assert.match(plist, /<key>PATH<\/key><string>\/opt\/tools&amp;bin:\/usr\/bin<\/string>/);
+  assert.doesNotMatch(plist, /CURSOR_API_KEY|accessClientSecret/);
   const ps = windowsInstall('C:\\Program Files\\node.exe', "C:\\Users\\O'Neil\\daemon.mjs");
   assert.match(ps, /Interactive -RunLevel Limited/); assert.match(ps, /O''Neil/);
   assert.doesNotMatch(ps, /SYSTEM|Highest|CURSOR_API_KEY/);
