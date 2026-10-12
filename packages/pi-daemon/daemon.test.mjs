@@ -27,7 +27,7 @@ test('config forbids arbitrary origin, relative path, duplicate alias and wildca
 });
 test('device requests use bearer, optional Access service credentials, no cookies or redirect following', async () => {
   const request = client({ url: 'https://os.example.com', accessClientId: 'local-id', accessClientSecret: 'local-secret' }, { token: 'device-token' }, async (url, init) => {
-    assert.equal(url, 'https://os.example.com/gatekeeper/custom/runner/heartbeat');
+    assert.equal(url, 'https://os.example.com/gatekeeper/custom/runner/device/heartbeat');
     assert.equal(init.redirect, 'error'); assert.equal(init.headers.authorization, 'Bearer device-token');
     assert.equal(init.headers['cf-access-client-secret'], 'local-secret'); assert.equal(init.headers.cookie, undefined);
     return Response.json({});

@@ -13,7 +13,9 @@ This is an independent implementation of those lifecycle concepts, **not a copy,
 
 Included: pairing/revocation, project registration, outbound HTTP polling, one in-flight job per device, fenced 45-second leases, bounded progress, final report, cooperative cancellation and durable receipt/outbox. Unlike broader Multica recovery, an unknown attempt is never automatically reassigned/re-executed. An uncertain task quarantines its device from further claims.
 
-Excluded: issue tracker, squads, repo cloning/worktrees, WebSocket wakeups, updater, credential synchronization, generic shell API, sandbox, recovery/archival UI and multi-user hosting. MVP caps: 20 devices total, 20 projects total and 100 retained tasks. Exhausting a limit fails closed; archival is a later implementation, not an existing command.
+Included owner task management: creation with explicit approval, bounded task list, stage/status polling, selected final answer, and cancellation request at `/gatekeeper/custom/runner/`. Cloudflare OS owns the queue and task lifecycle; the daemon only executes. Owner UI submissions are marked `owner-ui`, agent-approved submissions `os-approval`. This is a first task-management slice, not a full Multica issue tracker.
+
+Excluded: issue hierarchy, squads, repo cloning/worktrees, WebSocket wakeups, updater, credential synchronization, generic shell API, sandbox, recovery/archival UI and multi-user hosting. MVP caps: 20 devices total, 20 projects total and 100 retained tasks. Exhausting a limit fails closed; archival is a later implementation, not an existing command.
 
 ## Flow and authority
 
@@ -33,6 +35,8 @@ Remote requests cannot choose an absolute cwd, arbitrary argv, shell command, en
 
 The public agent API is one `PiProject` with `getStatus`, `submitTask`, `getTask`, and task `getStatus`/`cancel`. Every observation is authorized before return. Restricted observations suspend automatic approvals and sharing; `addObserver` always rejects. Execution and cancellation are staged through OS ApprovalQueue, not performed during submission. Rejected execution never becomes claimable; approving cancellation before execution prevents later enqueue. Repeated action application and identical completion delivery are idempotent. Cancellation does not reverse completed side effects.
 
+The human owner portal is a separate authenticated approval surface. `submit` requires the verified owner JWT, the canonical browser Origin, JSON and `approved: true`. The portal shows project/model/prompt and local authority before confirmation. It retains a submission ID across unchanged retries. It never allows devices to submit work. The task list omits prompt, answer, attempt and lease credentials; results are read only after selecting a task. User data is rendered through `textContent`, not HTML. Owner operations are not part of the agent capability API.
+
 **Single-owner private deployment only**: enabling requires one administrator; the Access policy must also admit only that owner (plus the narrowly approved daemon service identity). The credential-free Custom account does not provide tenant isolation. Do not enable this MVP on a public/multi-member OS deployment. Project lookup is through the opaque `pi-project://projects/<uuid>` URL copied from the owner portal; a resource picker is not included.
 
 ## Deployment gate — not performed
@@ -45,7 +49,9 @@ Enable only after a separate production mutation review:
 
 This adds `PI_COORDINATOR` and migration `pi-daemon-v1` for `PiCoordinator` / `PiProjectGatekeeper` in the existing private Custom Worker. Old `CustomGatekeeper`, existing KV/R2 and GitHub connection remain unchanged. Disabled/default configurations emit no daemon binding or migration.
 
-Device requests do **not** magically pass the existing interactive Cloudflare Access policy. They need an approved non-interactive Access service identity/policy for the daemon path, or another separately reviewed transport. The client supports local `accessClientId` / `accessClientSecret`; these are separate from the device bearer. **No Access policy/service token was created in this task. Do not bypass Access or put service credentials in the repository.** Keep the private Custom Worker workers.dev and preview routes disabled.
+Device requests do **not** magically pass the existing interactive Cloudflare Access policy. They use only `/gatekeeper/custom/runner/device/*`; the owner portal, task management, pairing-code creation and revocation remain outside that path, under the original owner Access application/audience. The old unprefixed device endpoints return 404.
+
+Production transport plan: one additional path-specific self-hosted Access application, with a **Service Auth** policy admitting only the dedicated daemon service token. More-specific Access applications do not inherit the root application policy. Do not attach the token to the whole OS app, use Bypass/Everyone, or change the original audience/admin policy. The client sends local `accessClientId` / `accessClientSecret` on every request; these are separate from the device bearer. New Access service secrets may use the `cfast_` format; do not require legacy hexadecimal format. **No Access policy/service token has been created. Do not put service credentials in the repository.** Keep the private Custom Worker workers.dev and preview routes disabled.
 
 Before rollout: review exact commits, Worker identities, migrations, owner/Access policy, credential scope, costs, data retention and rollback. A rollback of code does not undo created DO storage or local Pi effects. Stop/revoke all devices before rolling back; preserve receipts and DO data. No secret installation, production migration, pairing or daemon startup occurred here.
 
@@ -80,7 +86,7 @@ node packages/pi-daemon/daemon.mjs pair
 node packages/pi-daemon/daemon.mjs run
 ```
 
-The portal validates signed Access JWT issuer/audience/expiry/email and canonical Origin for writes. Device routes reject browser cookies/Origin and require a separate bearer. Pairing consumes a 256-bit one-use code; only token hashes are stored remotely. Device authentication cannot submit jobs or revoke devices. The daemon publishes alias/model metadata and prints opaque project URLs, not absolute paths, prompts, results or credentials.
+The portal validates signed Access JWT issuer/audience/expiry/email and canonical Origin for writes. Device routes reject browser cookies/Origin and require a separate bearer. Pairing consumes a 256-bit one-use code; only token hashes are stored remotely. Device authentication cannot submit jobs or revoke devices. A service JWT without owner email cannot operate the owner portal. The daemon publishes alias/model metadata and prints opaque project URLs, not absolute paths, prompts, results or credentials.
 
 ## Login startup and stop
 
@@ -111,6 +117,8 @@ node packages/pi-daemon/install.mjs start
 
 ## Verification
 
-Automated: deployment-config opt-in/noninterference test; real workerd DO/facet approval simulation, reject/cancel-first, idempotent apply, observer rejection, atomic concurrent claim, JWT owner/audience, one-use pairing, device separation, lease expiry/fencing, revocation, bounds and cross-project reads. Node tests cover native subprocess pipes against a no-model fixture, fake Pi settlement/errors/abort, Windows path/startup generation, private receipt persistence, blocked replay, terminal outbox and journal-before-execution.
+Automated: deployment-config opt-in/noninterference test; real workerd DO/facet approval simulation, reject/cancel-first, idempotent apply, observer rejection, atomic concurrent claim, JWT owner/audience, one-use pairing, device separation, lease expiry/fencing, revocation, bounds and cross-project reads. Owner UI tests include explicit approval, allowed models, foreign Origin rejection, idempotent submission, cancellation, list redaction, emitted-script syntax and email-less service JWT rejection. Node tests cover native subprocess pipes against a no-model fixture, fake Pi settlement/errors/abort, Windows path/startup generation, private receipt persistence, blocked replay, terminal outbox and journal-before-execution.
+
+Current Cloudflare references: [application path precedence](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/), [service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/), [Worker rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
 `pnpm check` runs the full tests/builds and Wrangler dry-runs with daemon enabled in ignored local configuration. `pnpm lint:check` and TypeScript checks also run. This does **not** verify real Cursor inference, Windows SDK/runtime/ACL/Scheduled Tasks, native extension prompts, production Access transport or end-to-end OS agent execution. No paid model probe was performed for this MVP.

@@ -56,7 +56,7 @@ export function client(config, credential, fetcher = fetch) {
       headers['cf-access-client-id'] = config.accessClientId;
       headers['cf-access-client-secret'] = config.accessClientSecret;
     }
-    const r = await fetcher(`${config.url.replace(/\/$/, '')}/gatekeeper/custom/runner/${op}`, {
+    const r = await fetcher(`${config.url.replace(/\/$/, '')}/gatekeeper/custom/runner/device/${op}`, {
       method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(10_000),
     });
     if (!r.ok || !r.headers.get('content-type')?.includes('application/json')) throw new Error('Daemon request rejected; check Access, pairing and lease');

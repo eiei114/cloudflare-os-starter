@@ -6,6 +6,7 @@ export type TaskRecord = {
   status: 'queued' | 'running' | 'cancel-requested' | 'completed' | 'failed' | 'cancelled' | 'uncertain';
   attempt?: string; leaseUntil?: number; progress?: string; result?: string;
   createdAt?: number;
+  source?: 'owner-ui' | 'os-approval';
 };
 type Device = { id: string; label: string; platform: string; tokenHash: string; revoked: boolean; seen: number };
 export type CoordinatorState = {
@@ -47,6 +48,8 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
   }
   if (auth.owner) {
     if (op === 'inventory') return { devices: s.devices.map(({ tokenHash: _, ...d }) => d), projects: s.projects };
+    if (op === 'tasks') return { tasks: s.tasks.toSorted((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+      .map(({ prompt: _, result: __, attempt: ___, leaseUntil: ____, ...task }) => task) };
     if (op === 'revoke') {
       const d = s.devices.find(candidate => candidate.id === data.deviceId);
       if (!d) throw new Error('Unknown device');
@@ -77,7 +80,8 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       if (!p.models.includes(model as string)) throw new Error('Model not locally allowed');
       if (s.tasks.length >= 100) throw new Error('MVP task history limit; archive support required before accepting more');
       const t: TaskRecord = { id: text(data.id, 64), projectId: p.id,
-        prompt: text(data.prompt, 32_000), model: model as string, status: 'queued', createdAt: now };
+        prompt: text(data.prompt, 32_000), model: model as string, status: 'queued', createdAt: now,
+        source: data.source === 'owner-ui' ? 'owner-ui' : 'os-approval' };
       s.tasks.push(t);
       return t;
     }

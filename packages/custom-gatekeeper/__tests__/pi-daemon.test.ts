@@ -71,6 +71,15 @@ describe('daemon state protocol', () => {
     const status = transition(s, 'task', { id: 'task', projectId }, owner, 5);
     expect(status).not.toHaveProperty('prompt');
   });
+  it('owner task list is bounded metadata, never prompts, results or lease credentials', () => {
+    const { s, projectId, auth } = setup(); enqueue(s, projectId);
+    transition(s, 'claim', { attempt: 'private-attempt' }, auth, 5);
+    transition(s, 'finish', { id: 'task', attempt: 'private-attempt', status: 'completed', result: 'private-result' }, auth, 6);
+    const list = transition(s, 'tasks', {}, owner, 7) as any;
+    expect(list.tasks[0]).toMatchObject({ id: 'task', status: 'completed', source: 'os-approval' });
+    for (const field of ['prompt', 'result', 'attempt', 'leaseUntil']) expect(list.tasks[0]).not.toHaveProperty(field);
+    expect(() => transition(s, 'tasks', {}, auth, 7)).toThrow();
+  });
 });
 
 const testEnv = env as unknown as { PI_COORDINATOR: DurableObjectNamespace<PiCoordinator>;
@@ -105,17 +114,23 @@ describe('HTTP fail-closed boundaries', () => {
   const e = { ...testEnv, PI_DAEMON_ENABLED: true, PUBLIC_BASE_URL: base };
   it('disabled, nonmatching and anonymous routes', async () => {
     expect(await fetchPiDaemon(new Request(base + '/unrelated'), e)).toBeUndefined();
-    expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/claim'), {}))?.status).toBe(503);
-    expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/claim', { method: 'POST' }), e))?.status).toBe(401);
+    expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/claim'), {}))?.status).toBe(503);
+    expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/claim', { method: 'POST' }), e))?.status).toBe(401);
   });
   it('rejects browser cookies, Origin, unknown operations and oversized streaming input', async () => {
     for (const headers of [{ cookie: 'owner=1' }, { origin: base }]) {
-      const r = await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/pair', { method: 'POST', headers }), e);
+      const r = await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/pair', { method: 'POST', headers }), e);
       expect(r?.status).toBe(403);
     }
-    const big = await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(100_001) }), e);
+    const big = await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(100_001) }), e);
     expect(big?.status).toBe(413);
     expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/enqueue', { method: 'POST' }), e))?.status).toBe(404);
+    for (const op of ['claim', 'pair', 'heartbeat']) expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST' }), e))?.status).toBe(404);
+    for (const op of ['submit', 'tasks', 'cancel', 'inventory', 'pair-code']) {
+      expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/' + op, { method: 'POST' }), e))?.status).toBe(404);
+      expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST',
+        headers: { origin: base, authorization: 'Bearer ' + 'a'.repeat(64) } }), e))?.status).toBe(403);
+    }
   });
 });
 
@@ -138,7 +153,7 @@ describe('owner portal and observation enforcement', () => {
     expect((await fetchPiDaemon(req(await token('owner@example.com', 'wrong')), e))?.status).toBe(400);
     const r = await fetchPiDaemon(req(await token('owner@example.com')), e);
     expect(r?.status).toBe(200); const code = (await r!.json() as any).code;
-    const pairReq = () => new Request(e.PUBLIC_BASE_URL + '/gatekeeper/custom/runner/pair', {
+    const pairReq = () => new Request(e.PUBLIC_BASE_URL + '/gatekeeper/custom/runner/device/pair', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }),
     });
     expect((await fetchPiDaemon(pairReq(), e))?.status).toBe(200);
@@ -148,6 +163,32 @@ describe('owner portal and observation enforcement', () => {
     }), e);
     expect(portal?.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     expect(portal?.headers.get('cache-control')).toBe('no-store');
+    const html = await portal!.text();
+    expect(html).toContain('Approve and run task');
+    expect(html).not.toContain('innerHTML');
+    // Parse the actual emitted owner script, not a separately maintained copy.
+    expect(() => new Function(html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)![1])).not.toThrow();
+    const { projectId } = await pairedProject();
+    const jwt = await token('owner@example.com');
+    const post = (op: string, body: unknown, origin = e.PUBLIC_BASE_URL) => fetchPiDaemon(new Request(
+      e.PUBLIC_BASE_URL + '/gatekeeper/custom/runner/' + op, { method: 'POST',
+        headers: { 'cf-access-jwt-assertion': jwt, origin, 'content-type': 'application/json' }, body: JSON.stringify(body) }), e);
+    const task = { id: crypto.randomUUID(), projectId, model: 'cursor/model', prompt: 'owner test', approved: true };
+    expect((await post('submit', { ...task, approved: false }))?.status).toBe(400);
+    expect((await post('submit', task, 'https://evil.example'))?.status).toBe(403);
+    expect((await post('submit', { ...task, model: 'openai/not-allowed' }))?.status).toBe(400);
+    expect((await post('submit', task))?.status).toBe(200);
+    expect((await post('submit', task))?.status).toBe(200);
+    const list = await (await post('tasks', {}))!.json() as any;
+    expect(list.tasks.filter((t: any) => t.id === task.id)).toHaveLength(1);
+    expect(list.tasks.find((t: any) => t.id === task.id)).toMatchObject({ source: 'owner-ui', status: 'queued' });
+    expect((await post('cancel', task))?.status).toBe(200);
+    expect(await (await post('task', task))!.json()).toMatchObject({ status: 'cancelled' });
+    const serviceJwt = await new SignJWT({ type: 'app', common_name: 'service-token' })
+      .setProtectedHeader({ alg: 'RS256', kid: 'daemon-test' }).setIssuer(e.CF_ACCESS_ISS)
+      .setAudience(e.CF_ACCESS_AUD).setIssuedAt().setExpirationTime('5m').sign(keys.privateKey);
+    expect((await fetchPiDaemon(new Request(e.PUBLIC_BASE_URL + '/gatekeeper/custom/runner/tasks', { method: 'POST',
+      headers: { 'cf-access-jwt-assertion': serviceJwt, origin: e.PUBLIC_BASE_URL, 'content-type': 'application/json' }, body: '{}' }), e))?.status).toBe(400);
   });
   it('does not return a project or task when observation authorization fails', async () => {
     const project = vi.fn();
