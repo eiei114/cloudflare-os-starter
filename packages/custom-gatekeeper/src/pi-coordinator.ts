@@ -1,6 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
 
 export type Project = { id: string; deviceId: string; alias: string; models: string[] };
+export type Workspace = { id: string; name: string };
+export type ManagedProject = { id: string; workspaceId: string; name: string; description: string;
+  executionProjectId: string; attributes: Record<string, string> };
+export type Agent = { id: string; workspaceId: string; name: string; deviceId: string;
+  model: string; instructions: string; enabled: boolean; harness: 'pi'; profile: 'local'; revision: number };
 export type TaskRecord = {
   id: string; projectId: string; prompt: string; model: string;
   status: 'queued' | 'running' | 'cancel-requested' | 'completed' | 'failed' | 'cancelled' | 'uncertain';
@@ -9,11 +14,13 @@ export type TaskRecord = {
   source?: 'owner-ui' | 'os-approval';
   title?: string;
   reviewedAt?: number;
+  workspaceId?: string; managedProjectId?: string; agentId?: string; agentName?: string; agentInstructions?: string; agentRevision?: number;
 };
 type Device = { id: string; label: string; platform: string; tokenHash: string; revoked: boolean; seen: number };
 export type CoordinatorState = {
   devices: Device[]; projects: Project[]; tasks: TaskRecord[];
   pairs: { hash: string; expires: number; label: string; platform: string }[];
+  workspaces?: Workspace[]; managedProjects?: ManagedProject[]; agents?: Agent[];
 };
 export const emptyState = (): CoordinatorState => ({ devices: [], projects: [], tasks: [], pairs: [] });
 const active = (t: TaskRecord) => t.status === 'running' || t.status === 'cancel-requested';
@@ -21,6 +28,17 @@ const text = (v: unknown, max: number): string => {
   if (typeof v !== 'string' || !v.trim() || new TextEncoder().encode(v).length > max) throw new Error('Invalid input');
   return v;
 };
+const optionalText = (v: unknown, max: number) => v === '' || v === undefined ? '' : text(v, max);
+function initializeManagement(s: CoordinatorState) {
+  s.workspaces ??= [{ id: 'personal', name: 'Personal workspace' }];
+  s.managedProjects ??= [];
+  s.agents ??= [];
+  // Stable legacy mapping. Never change the device-owned execution catalog.
+  for (const p of s.projects) if (!s.managedProjects.some(m => m.id === p.id) && s.managedProjects.length < 60) {
+    s.managedProjects.push({ id: p.id, workspaceId: 'personal', name: p.alias,
+      description: '', executionProjectId: p.id, attributes: {} });
+  }
+}
 export async function digest(token: string): Promise<string> {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))))
     .map(b => b.toString(16).padStart(2, '0')).join('');
@@ -49,9 +67,54 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
     return { deviceId: d.id };
   }
   if (auth.owner) {
+    initializeManagement(s);
+    const workspace = (id: unknown) => {
+      const w = s.workspaces!.find(candidate => candidate.id === id);
+      if (!w) throw new Error('Unknown workspace');
+      return w;
+    };
+    if (op === 'management') return { workspaces: s.workspaces, projects: s.managedProjects, agents: s.agents };
+    if (op === 'workspace-save') {
+      const id = text(data.id, 64); const name = text(data.name, 120);
+      const prior = s.workspaces!.find(w => w.id === id);
+      if (prior) prior.name = name;
+      else { if (s.workspaces!.length >= 20) throw new Error('Workspace limit'); s.workspaces!.push({ id, name }); }
+      return { id };
+    }
+    if (op === 'managed-project-save') {
+      const id = text(data.id, 64); const w = workspace(data.workspaceId);
+      const execution = s.projects.find(p => p.id === data.executionProjectId);
+      if (!execution || s.devices.find(d => d.id === execution.deviceId)?.revoked !== false) throw new Error('Unavailable execution target');
+      if (!data.attributes || typeof data.attributes !== 'object' || Array.isArray(data.attributes)) throw new Error('Invalid attributes');
+      const entries = Object.entries(data.attributes);
+      if (entries.length > 10) throw new Error('Attribute limit');
+      const attributes = Object.fromEntries(entries.map(([k, v]) => [text(k, 80), text(v, 300)]));
+      const prior = s.managedProjects!.find(p => p.id === id);
+      // Project membership is stable; moving queued/history across workspaces is unsupported.
+      if (prior && prior.workspaceId !== w.id) throw new Error('Workspace mismatch');
+      const value: ManagedProject = { id, workspaceId: w.id, name: text(data.name, 120),
+        description: optionalText(data.description, 1000), executionProjectId: execution.id, attributes };
+      if (prior) Object.assign(prior, value);
+      else { if (s.managedProjects!.length >= 60) throw new Error('Project limit'); s.managedProjects!.push(value); }
+      return { id };
+    }
+    if (op === 'agent-save') {
+      const id = text(data.id, 64); const w = workspace(data.workspaceId);
+      const device = s.devices.find(d => d.id === data.deviceId && !d.revoked);
+      const model = text(data.model, 200);
+      if (!device || !s.projects.some(p => p.deviceId === device.id && p.models.includes(model))) throw new Error('Unavailable runtime/model');
+      if (typeof data.enabled !== 'boolean' || data.harness !== 'pi' || data.profile !== 'local') throw new Error('Unsupported execution settings');
+      const prior = s.agents!.find(a => a.id === id);
+      if (prior && prior.workspaceId !== w.id) throw new Error('Workspace mismatch');
+      const value: Agent = { id, workspaceId: w.id, name: text(data.name, 120), deviceId: device.id, model,
+        instructions: optionalText(data.instructions, 4000), enabled: data.enabled, harness: 'pi', profile: 'local', revision: (prior?.revision ?? 0) + 1 };
+      if (prior) Object.assign(prior, value);
+      else { if (s.agents!.length >= 40) throw new Error('Agent limit'); s.agents!.push(value); }
+      return { id };
+    }
     if (op === 'inventory') return { devices: s.devices.map(({ tokenHash: _, ...d }) => d), projects: s.projects };
     if (op === 'tasks') return { tasks: s.tasks.toSorted((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-      .map(({ prompt: _, result: __, attempt: ___, leaseUntil: ____, ...task }) => task) };
+      .map(({ prompt: _, result: __, attempt: ___, leaseUntil: ____, agentInstructions: _____, ...task }) => task) };
     if (op === 'revoke') {
       const d = s.devices.find(candidate => candidate.id === data.deviceId);
       if (!d) throw new Error('Unknown device');
@@ -73,7 +136,9 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       const prior = s.tasks.find(t => t.id === data.id);
       if (prior) {
         if (prior.projectId !== data.projectId || prior.prompt !== data.prompt || prior.model !== data.model ||
-            (prior.title ?? '') !== (data.title ?? ''))
+            (prior.title ?? '') !== (data.title ?? '') || (prior.agentId ?? '') !== (data.agentId ?? '') ||
+            prior.agentRevision !== data.agentRevision ||
+            (data.managedProjectId !== undefined && prior.managedProjectId !== data.managedProjectId))
           throw new Error('Task id collision');
         return prior;
       }
@@ -81,9 +146,18 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       if (!p || s.devices.find(d => d.id === p.deviceId)?.revoked !== false) throw new Error('Unavailable project');
       const model = data.model ?? p.models[0];
       if (!p.models.includes(model as string)) throw new Error('Model not locally allowed');
+      const managed = s.managedProjects!.find(m => m.id === (data.managedProjectId ?? p.id));
+      if (!managed || managed.executionProjectId !== p.id) throw new Error('Project binding mismatch');
+      const agent = data.agentId === undefined ? undefined : s.agents!.find(a => a.id === data.agentId);
+      if (data.agentId !== undefined && (!agent || !agent.enabled || agent.workspaceId !== managed.workspaceId ||
+          agent.deviceId !== p.deviceId || agent.model !== model || agent.revision !== data.agentRevision)) throw new Error('Incompatible agent');
+      const prompt = text(data.prompt, 32_000);
+      if (agent?.instructions) text(agent.instructions + '\n\n--- Task ---\n' + prompt, 32_000);
       if (s.tasks.length >= 100) throw new Error('MVP task history limit; archive support required before accepting more');
       const t: TaskRecord = { id: text(data.id, 64), projectId: p.id,
-        prompt: text(data.prompt, 32_000), model: model as string, status: 'queued', createdAt: now,
+        prompt, model: model as string, status: 'queued', createdAt: now,
+        workspaceId: managed.workspaceId, managedProjectId: managed.id,
+        ...(agent ? { agentId: agent.id, agentName: agent.name, agentInstructions: agent.instructions, agentRevision: agent.revision } : {}),
         source: data.source === 'owner-ui' ? 'owner-ui' : 'os-approval',
         ...(data.title === undefined ? {} : { title: text(data.title, 200) }) };
       s.tasks.push(t);
@@ -102,7 +176,8 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
         if (t.status !== 'completed') throw new Error('Only completed execution may be reviewed');
         t.reviewedAt ??= now;
       }
-      const { prompt: _, attempt: __, leaseUntil: ___, createdAt: ____, title: _____, reviewedAt: ______, ...status } = t;
+      const { prompt: _, attempt: __, leaseUntil: ___, createdAt: ____, title: _____, reviewedAt: ______,
+        agentInstructions: _______, ...status } = t;
       return status;
     }
   }
@@ -134,7 +209,8 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       .toSorted((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0];
     if (!t) return { task: null };
     t.status = 'running'; t.attempt = text(data.attempt, 64); t.leaseUntil = now + 45_000;
-    return { task: { ...t, alias: s.projects.find(p => p.id === t.projectId)!.alias } };
+    return { task: { ...t, prompt: t.agentInstructions ? t.agentInstructions + '\n\n--- Task ---\n' + t.prompt : t.prompt,
+      alias: s.projects.find(p => p.id === t.projectId)!.alias } };
   }
   if (op === 'heartbeat' && !data.id) return {};
   const t = deviceTasks.find(candidate => candidate.id === data.id && candidate.attempt === data.attempt);

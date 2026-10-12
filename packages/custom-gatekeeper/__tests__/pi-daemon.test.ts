@@ -17,6 +17,50 @@ function enqueue(s: CoordinatorState, projectId: string, id = 'task') {
   return transition(s, 'enqueue', { id, projectId, prompt: 'safe test', model: 'cursor/model' }, owner, 4);
 }
 describe('daemon state protocol', () => {
+  it('migrates legacy catalog into a stable workspace without widening execution authority', () => {
+    const { s, projectId, auth } = setup();
+    const before = JSON.stringify(s.projects);
+    const first = transition(s, 'management', {}, owner, 4) as any;
+    expect(first.workspaces).toEqual([{ id: 'personal', name: 'Personal workspace' }]);
+    expect(first.projects).toHaveLength(1);
+    expect(first.projects[0]).toMatchObject({ id: projectId, workspaceId: 'personal', executionProjectId: projectId });
+    transition(s, 'management', {}, owner, 5);
+    expect(s.managedProjects).toHaveLength(1);
+    expect(JSON.stringify(s.projects)).toBe(before);
+    for (const op of ['management', 'workspace-save', 'managed-project-save', 'agent-save'])
+      expect(() => transition(s, op, {}, auth, 6)).toThrow();
+  });
+  it('persists workspace projects and agent snapshots; rejects incompatible assignments and retry collisions', () => {
+    const { s, projectId, auth } = setup();
+    transition(s, 'workspace-save', { id: 'work', name: 'Work' }, owner, 4);
+    const project = { id: 'managed', workspaceId: 'work', name: 'Demo', description: 'Pilot',
+      executionProjectId: projectId, attributes: { priority: 'normal' } };
+    transition(s, 'managed-project-save', project, owner, 4);
+    const agent = { id: 'agent', workspaceId: 'work', name: 'Builder', deviceId: 'device',
+      model: 'cursor/model', instructions: 'Be concise', enabled: true, harness: 'pi', profile: 'local' };
+    transition(s, 'agent-save', agent, owner, 4);
+    const task = { id: 'assigned', projectId, managedProjectId: 'managed', agentId: 'agent', agentRevision: 1, model: 'cursor/model', prompt: 'test' };
+    expect(() => transition(s, 'enqueue', { ...task, managedProjectId: projectId }, owner, 5)).toThrow('Incompatible');
+    transition(s, 'enqueue', task, owner, 5);
+    transition(s, 'agent-save', { ...agent, name: 'Renamed', instructions: 'Changed', enabled: false }, owner, 6);
+    transition(s, 'enqueue', task, owner, 7);
+    expect(s.tasks).toHaveLength(1);
+    expect(s.tasks[0]).toMatchObject({ workspaceId: 'work', agentName: 'Builder', agentInstructions: 'Be concise' });
+    expect(() => transition(s, 'enqueue', { ...task, id: 'disabled' }, owner, 7)).toThrow('Incompatible');
+    expect(() => transition(s, 'enqueue', { ...task, agentRevision: 2 }, owner, 7)).toThrow('collision');
+    expect(() => transition(s, 'enqueue', { ...task, agentId: undefined }, owner, 7)).toThrow('collision');
+    expect((transition(s, 'claim', { attempt: 'a' }, auth, 8) as any).task.prompt).toBe('Be concise\n\n--- Task ---\ntest');
+    expect((transition(s, 'tasks', {}, owner, 9) as any).tasks[0]).not.toHaveProperty('agentInstructions');
+    expect(transition(s, 'task', { id: 'assigned', projectId }, owner, 9)).not.toHaveProperty('agentInstructions');
+    const restored = JSON.parse(JSON.stringify(s));
+    expect((transition(restored, 'management', {}, owner, 10) as any).projects).toContainEqual(project);
+    for (const bad of [{ workspaceId: 'missing' }, { workspaceId: 'personal' }, { executionProjectId: '/tmp/arbitrary' },
+      { attributes: { invalid: 1 } }, { attributes: [] }, { attributes: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [i, 'x'])) }])
+      expect(() => transition(s, 'managed-project-save', { ...project, ...bad }, owner, 10)).toThrow();
+    for (const bad of [{ model: 'openai/unregistered' }, { deviceId: 'missing' }, { harness: 'shell' }, { profile: '/tmp/profile' },
+      { instructions: 'x'.repeat(4001) }, { enabled: 'yes' }, { workspaceId: 'personal' }])
+      expect(() => transition(s, 'agent-save', { ...agent, ...bad }, owner, 10)).toThrow();
+  });
   it('pairing is one-use, expires, and never exposes stored credential hashes', () => {
     const { s } = setup();
     expect(() => transition(s, 'pair', { codeHash: 'code' }, {}, 4)).toThrow();
@@ -108,6 +152,27 @@ async function pairedProject() {
   return { projectId: projects[0].id, hash };
 }
 describe('real workerd approval facet', () => {
+  it('stores management metadata and immutable agent execution snapshots in real DO transactions', async () => {
+    const { projectId, hash } = await pairedProject();
+    const inventory = await callCoordinator(testEnv, 'inventory', {}, owner);
+    const deviceId = inventory.projects.find((p: any) => p.id === projectId).deviceId;
+    const workspaceId = crypto.randomUUID(), managedProjectId = crypto.randomUUID(), agentId = crypto.randomUUID();
+    await callCoordinator(testEnv, 'workspace-save', { id: workspaceId, name: 'DO workspace' }, owner);
+    await callCoordinator(testEnv, 'managed-project-save', { id: managedProjectId, workspaceId, name: 'DO project',
+      description: '', attributes: { category: 'test' }, executionProjectId: projectId }, owner);
+    const agent = { id: agentId, workspaceId, name: 'DO agent', deviceId, model: 'cursor/model',
+      instructions: 'Initial role', enabled: true, harness: 'pi', profile: 'local' };
+    await callCoordinator(testEnv, 'agent-save', agent, owner);
+    const data = { id: crypto.randomUUID(), projectId, managedProjectId, agentId, agentRevision: 1, model: 'cursor/model', prompt: 'test' };
+    await callCoordinator(testEnv, 'enqueue', data, owner);
+    await callCoordinator(testEnv, 'agent-save', { ...agent, instructions: 'New role' }, owner);
+    await expect(callCoordinator(testEnv, 'enqueue', { ...data, id: crypto.randomUUID() }, owner)).rejects.toThrow();
+    // Failed transactions neither enqueue nor mutate previously approved settings.
+    const metadata = await callCoordinator(testEnv, 'management', {}, owner);
+    expect(metadata.agents.find((a: any) => a.id === agentId)).toMatchObject({ revision: 2, instructions: 'New role' });
+    const claim = await callCoordinator(testEnv, 'claim', { attempt: crypto.randomUUID() }, { hash });
+    expect(claim.task).toMatchObject({ id: data.id, workspaceId, agentName: 'DO agent', prompt: 'Initial role\n\n--- Task ---\ntest' });
+  });
   for (const mode of ['apply', 'cancel-first', 'reject']) it(`simulates before approval and handles ${mode}`, async () => {
     const { projectId, hash } = await pairedProject();
     const r = JSON.parse(await testEnv.PI_TEST_PARENT.getByName(crypto.randomUUID()).scenario(projectId, mode));
@@ -145,7 +210,7 @@ describe('HTTP fail-closed boundaries', () => {
       headers: { cookie: '', origin: '' } }), e))?.status).toBe(401);
     expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/enqueue', { method: 'POST' }), e))?.status).toBe(404);
     for (const op of ['claim', 'pair', 'heartbeat']) expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST' }), e))?.status).toBe(404);
-    for (const op of ['submit', 'tasks', 'cancel', 'review', 'inventory', 'pair-code']) {
+    for (const op of ['submit', 'tasks', 'cancel', 'review', 'inventory', 'pair-code', 'management', 'workspace-save', 'managed-project-save', 'agent-save']) {
       expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/' + op, { method: 'POST' }), e))?.status).toBe(404);
       expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST',
         headers: { origin: base, authorization: 'Bearer ' + 'a'.repeat(64) } }), e))?.status).toBe(403);
@@ -211,6 +276,7 @@ describe('owner portal and observation enforcement', () => {
     const html = await portal!.text();
     expect(html).toContain('承認して実行待ちに追加');
     expect(html).toContain('タスクボード');
+    for (const label of ['ワークスペース', 'プロジェクト', 'エージェント', 'ランタイム', '役割・追加指示']) expect(html).toContain(label);
     for (const label of ['実行待ち', '実行中', '確認待ち', '完了', '停止・要対応']) expect(html).toContain(label);
     expect(html).not.toContain('innerHTML');
     // Parse the actual emitted owner script, not a separately maintained copy.
