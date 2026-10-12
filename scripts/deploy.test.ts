@@ -242,6 +242,22 @@ test("rejects malformed AI Gateway providers and account", () => {
     /aiGateway.accountId must be null or 32 hexadecimal/i);
 });
 
+test('daemon is opt-in, adds isolated DOs, and never alters Pi console or old resources', async () => {
+  const config = structuredClone(validConfig);
+  const bases = await baseConfigs();
+  const disabled = generateConfigs(config, bases);
+  assert.equal(disabled.customGatekeeper.vars!.PI_DAEMON_ENABLED, undefined);
+  assert.equal(disabled.customGatekeeper.durable_objects?.bindings.some(b => b.name === 'PI_COORDINATOR'), undefined);
+  config.piDaemon = { enabled: true };
+  const enabled = generateConfigs(config, bases);
+  assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_ENABLED, true);
+  assert.deepEqual(enabled.customGatekeeper.durable_objects?.bindings, [{ name: 'PI_COORDINATOR', class_name: 'PiCoordinator' }]);
+  assert.equal(enabled.customGatekeeper.migrations?.at(-1)?.tag, 'pi-daemon-v1');
+  assert.deepEqual(enabled.context, disabled.context);
+  assert.deepEqual(enabled.router, disabled.router);
+  assert.deepEqual(enabled.customGatekeeper.secrets, disabled.customGatekeeper.secrets);
+});
+
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
   const generated = generateConfigs(validConfig, await baseConfigs());
   const vars = generated.workshop.vars!;

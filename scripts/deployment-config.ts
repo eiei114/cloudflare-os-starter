@@ -119,6 +119,8 @@ export interface DeploymentConfig {
   aiGateway: AiGatewayConfigInput;
   /** Optional owner-only Pi human console. Token is installed as a Custom Worker secret. */
   piRunner?: { enabled: boolean; url?: string };
+  /** Optional outbound local Pi daemon. Disabled unless explicitly enabled. */
+  piDaemon?: { enabled: boolean };
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { enabled?: boolean; name: string; message: string };
@@ -158,6 +160,7 @@ export interface ProdObservabilityConfig extends ObservabilityConfig {
 export type ProdWranglerConfig =
   Omit<WranglerConfig, "observability" | "artifacts" | "kv_namespaces" | "r2_buckets">
   & {
+    durable_objects?: { bindings: { name: string; class_name: string }[] };
     /** KV bindings. `id` absent requests Wrangler automatic provisioning. */
     kv_namespaces?: (BindingDecl & { id?: string })[];
     /** R2 bindings. `bucket_name` absent requests Wrangler automatic provisioning. */

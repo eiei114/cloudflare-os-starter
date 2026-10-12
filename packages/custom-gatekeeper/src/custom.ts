@@ -20,6 +20,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { CustomDeploymentInfo, CustomSession } from "./types.js";
 import TYPES_CODE from "./types-code.js";
+import { PI_PROJECT_RESOURCE } from './pi-project.js';
 
 const CUSTOM_ICON = {
   url:
@@ -130,11 +131,13 @@ export class CustomAccount extends WorkerEntrypoint<Cloudflare.Env> implements G
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return [];
+    return this.env.PI_DAEMON_ENABLED ? [PI_PROJECT_RESOURCE] : [];
   }
 
-  getGatekeeperClassFor(_url: string): never {
-    throw new Error("Custom Gatekeeper has no URL-addressed resources.");
+  async getGatekeeperClassFor(url: string): Promise<{ class: DurableObjectClass<Gatekeeper<any>>; resource: SupportedResource }> {
+    const match = /^pi-project:\/\/projects\/([a-f0-9-]{36})\/?$/.exec(url);
+    if (!this.env.PI_DAEMON_ENABLED || !match) throw new Error('Unsupported Pi project URL');
+    return { class: this.ctx.exports.PiProjectGatekeeper({ props: { projectId: match[1] } }), resource: PI_PROJECT_RESOURCE };
   }
 
   startResourceConfigurator(_resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
@@ -190,7 +193,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   }
 
   async getSupportedResources(_options?: { userId?: string }): Promise<SupportedResource[]> {
-    return [];
+    return this.env.PI_DAEMON_ENABLED ? [PI_PROJECT_RESOURCE] : [];
   }
 
   async getTypeScriptTypes(): Promise<string> {

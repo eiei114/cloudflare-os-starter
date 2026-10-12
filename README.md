@@ -30,6 +30,8 @@
 
 ## Overview
 
+Optional [outbound Pi daemon MVP](docs/pi-daemon-mvp.md): private single-owner project capabilities backed by a native Mac/Windows Pi host. Opt-in only; production rollout and Windows live verification are separate gates.
+
 This repository adds deployment controls around a pinned [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) release without modifying the upstream source.
 
 | Control | What you own |

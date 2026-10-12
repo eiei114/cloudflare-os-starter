@@ -212,6 +212,11 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
   if (!accountIdPattern.test(config.accountId)) {
     throw new Error("Cloudflare account IDs must be 32 hexadecimal characters.");
   }
+  if (config.piDaemon) {
+    if (typeof config.piDaemon.enabled !== 'boolean') throw new Error('piDaemon.enabled must be boolean.');
+    if (config.piDaemon.enabled && config.customGatekeeper.enabled === false) throw new Error('Pi daemon requires custom Worker.');
+    if (config.piDaemon.enabled && config.access.admins.length !== 1) throw new Error('Pi daemon MVP requires one owner and an owner-only Access policy.');
+  }
   if (config.piRunner) {
     if (typeof config.piRunner.enabled !== 'boolean') throw new Error('piRunner.enabled must be boolean.');
     if (config.piRunner.enabled) {
@@ -608,6 +613,17 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     customGatekeeper.secrets = {
       required: [...new Set([...(customGatekeeper.secrets?.required ?? []), "PI_RUNNER_TOKEN"])],
     };
+  }
+
+  if (config.piDaemon?.enabled) {
+    Object.assign(customGatekeeper.vars, { PI_DAEMON_ENABLED: true,
+      CF_ACCESS_ISS: config.access.issuer, CF_ACCESS_AUD: config.access.audience,
+      ADMINS: config.access.admins, PUBLIC_BASE_URL: origin });
+    customGatekeeper.durable_objects = { bindings: [
+      ...(customGatekeeper.durable_objects?.bindings ?? []), { name: 'PI_COORDINATOR', class_name: 'PiCoordinator' },
+    ] };
+    customGatekeeper.migrations = [...(customGatekeeper.migrations ?? []),
+      { tag: 'pi-daemon-v1', new_sqlite_classes: ['PiCoordinator', 'PiProjectGatekeeper'] }];
   }
 
   if (errorReporter) {
