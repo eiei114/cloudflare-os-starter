@@ -210,7 +210,7 @@ describe('HTTP fail-closed boundaries', () => {
       headers: { cookie: '', origin: '' } }), e))?.status).toBe(401);
     expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/enqueue', { method: 'POST' }), e))?.status).toBe(404);
     for (const op of ['claim', 'pair', 'heartbeat']) expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST' }), e))?.status).toBe(404);
-    for (const op of ['submit', 'tasks', 'cancel', 'review', 'inventory', 'pair-code', 'management', 'workspace-save', 'managed-project-save', 'agent-save']) {
+    for (const op of ['submit', 'tasks', 'cancel', 'review', 'inventory', 'pair-code', 'management', 'workspace-save', 'managed-project-save', 'agent-save', 'github-repos']) {
       expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/device/' + op, { method: 'POST' }), e))?.status).toBe(404);
       expect((await fetchPiDaemon(new Request(base + '/gatekeeper/custom/runner/' + op, { method: 'POST',
         headers: { origin: base, authorization: 'Bearer ' + 'a'.repeat(64) } }), e))?.status).toBe(403);

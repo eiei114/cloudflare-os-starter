@@ -1,11 +1,13 @@
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { digest, callCoordinator, type PiCoordinator } from './pi-coordinator.js';
 import type { PiConsoleEnv } from './pi-console.js';
+import { githubCatalog, repoName } from './github-projects.js';
 
 export type DaemonEnv = PiConsoleEnv & {
   PI_DAEMON_ENABLED?: boolean;
   PI_DAEMON_ACCESS_AUD?: string;
   PI_COORDINATOR?: DurableObjectNamespace<PiCoordinator>;
+  WORKSHOP_BACKEND?: Fetcher;
 };
 const prefix = '/gatekeeper/custom/runner/';
 const keys = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
@@ -29,7 +31,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
   const op = isDevice ? path.slice('device/'.length) : path;
   const deviceOps = ['pair', 'catalog', 'claim', 'heartbeat', 'finish'];
   const ownerOps = ['', 'pair-code', 'inventory', 'revoke', 'tasks', 'task', 'submit', 'cancel', 'review',
-    'management', 'workspace-save', 'managed-project-save', 'agent-save'];
+    'management', 'workspace-save', 'managed-project-save', 'agent-save', 'github-repos'];
   if (!(isDevice ? deviceOps : ownerOps).includes(op)) return json({ error: 'Not found' }, 404);
   if (req.method !== (op === '' ? 'GET' : 'POST')) return json({ error: 'Method not allowed' }, 405);
   let phase = 'authentication';
@@ -87,6 +89,16 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
     const data = JSON.parse(new TextDecoder().decode(buffer));
     if (!data || typeof data !== 'object' || Array.isArray(data)) return json({ error: 'Invalid body' }, 400);
     phase = 'coordinator';
+    if (op === 'github-repos') return json(await githubCatalog(req, env, data));
+    if (op === 'managed-project-save' && data.github) {
+      const link = data.github;
+      const name = repoName(link.fullName);
+      if (!Number.isSafeInteger(link.accountId) || link.accountId <= 0) return json({ error: 'Invalid GitHub account' }, 400);
+      const catalog = await githubCatalog(req, env, { accountId: link.accountId, query: name });
+      const repo = catalog.repos.find(r => r.value.toLowerCase() === name.toLowerCase());
+      if (!repo) return json({ error: 'Repository unavailable in connected account' }, 400);
+      data.github = { accountId: link.accountId, fullName: repo.value, verifiedAt: Date.now() };
+    }
     if (op === 'pair-code') {
       const code = randomToken();
       const result = await callCoordinator(env, op, { ...data, hash: await digest(code) }, auth);
@@ -154,7 +166,9 @@ body{padding:0;max-width:none}.shell{display:grid;grid-template-columns:240px mi
 <div class="board-scroll" tabindex="0" aria-label="タスクボード。横スクロールできます"><div class="board" id="tasks"></div></div>
 <h3 id="result-title">カードを選んで結果を確認</h3><pre id="result" aria-live="polite"></pre></section></section>
 <section class="panel" id="page-projects" hidden><h2 class="page-title">プロジェクト</h2><p class="hint">名前・説明・属性で仕事を分類。実行先は端末が事前登録したフォルダだけを選べます。ここから任意のパスやGitHub repoを端末へ追加できません。</p><button id="project-new">プロジェクトを追加</button><div id="project-list" class="grid-list"></div>
-<section class="setting-form" aria-labelledby="project-edit-title"><h3 id="project-edit-title">プロジェクト設定</h3><input id="project-id" type="hidden"><label>プロジェクト名 <input id="project-name" maxlength="100"></label><label>説明 <textarea id="project-description" maxlength="1000"></textarea></label><label>登録済み実行先 <select id="execution-project"></select></label><label>属性（JSON・文字列の組） <textarea id="project-attributes" spellcheck="false" placeholder='{"category":"development","priority":"normal"}'>{}</textarea></label><p class="hint">最大10属性。実行先変更は今後のタスクだけに適用されます。</p><button id="project-save" class="primary">プロジェクトを保存</button></section></section>
+<section class="setting-form" aria-labelledby="project-edit-title"><h3 id="project-edit-title">プロジェクト設定</h3><input id="project-id" type="hidden"><label>プロジェクト名 <input id="project-name" maxlength="100"></label><label>説明 <textarea id="project-description" maxlength="1000"></textarea></label>
+<h4>GitHubリポジトリ</h4><p class="hint">OSに接続済みのGitHubアカウントから選びます。公開・非公開repoの一覧だけを読み、追加ではclone・書き込み・OS Agentへの権限付与を行いません。</p><button id="github-load">接続済みGitHubからリポジトリを取得</button><label>GitHubアカウント <select id="github-account"></select></label><div class="fields"><label>リポジトリ検索 <input id="github-query" maxlength="200" placeholder="名前 または owner/repo"></label><div><button id="github-search">検索</button></div></div><label>アクセス可能なリポジトリ <select id="github-repo"></select></label><button id="github-select">選択したrepoを紐づけ</button><button id="github-clear">紐づけを外す</button><p id="github-selected" role="status">リポジトリ未設定</p><p class="hint">GitHubが見つからない場合は <a href="/gatekeepers" target="_blank" rel="noopener noreferrer">OSの接続設定</a> を確認してください。初期一覧は更新順100件。検索で対象を絞れます。</p>
+<label>登録済み実行先 <select id="execution-project"></select></label><label>属性（JSON・文字列の組） <textarea id="project-attributes" spellcheck="false" placeholder='{"category":"development","priority":"normal"}'>{}</textarea></label><p class="hint">実行先未設定でもrepoを管理できます。実行には端末側のフォルダ登録が必要です。最大10属性。実行先変更は今後のタスクだけに適用されます。</p><button id="project-save" class="primary">プロジェクトを保存</button></section></section>
 <section class="panel" id="page-agents" hidden><h2 class="page-title">エージェント</h2><p class="hint">実行する端末・モデル・役割を設定します。認証情報は端末に置いたまま。Piの通常の認証・設定・拡張を読みます。</p><button id="agent-new">エージェントを追加</button><div id="agent-list" class="grid-list"></div>
 <section class="setting-form" aria-labelledby="agent-edit-title"><h3 id="agent-edit-title">エージェント設定</h3><input id="agent-id" type="hidden"><label>名前 <input id="agent-name" maxlength="100"></label><div class="fields"><label>ランタイム <select id="agent-runtime"></select></label><label>モデル <select id="agent-model"></select></label></div><p>実行エンジン：Pi Coding Agent / プロファイル：端末の通常設定</p><label>役割・追加指示 <textarea id="agent-instructions" maxlength="4000" placeholder="例：回答は日本語。変更前に既存のテストを確認する。"></textarea></label><label><input type="checkbox" id="agent-enabled" checked> 新しいタスクに割り当て可能</label><p class="hint">設定はタスク承認時に固定されます。編集しても実行中・実行待ちの仕事は変わりません。任意の環境変数・起動引数・拡張の遠隔インストールは扱いません。</p><button id="agent-save" class="primary">エージェントを保存</button></section></section>
 <section class="panel" id="page-runtimes" hidden><h2 class="page-title">ランタイム</h2><p class="hint">登録端末の状態。ランタイムはワークスペース間で共有する実行資源です。認証・権限境界としてワークスペースを使わないでください。</p><div id="runtime-list" class="grid-list"></div>
@@ -168,7 +182,7 @@ body{padding:0;max-width:none}.shell{display:grid;grid-template-columns:240px mi
 <section class="panel" id="page-settings" hidden><h2 class="page-title">ワークスペース設定</h2><section class="setting-form"><label>ワークスペース名 <input id="workspace-edit-name" maxlength="100"></label><button id="workspace-save">名前を保存</button><hr><label>新しいワークスペース名 <input id="workspace-new-name" maxlength="100"></label><button id="workspace-create">ワークスペースを作成</button><p class="hint">単一所有者の分類用です。メンバー招待・テナント分離・削除・移動は未対応。</p></section></section></main></div>
 <script nonce="${nonce}">
 const el=id=>document.getElementById(id);
-let projects=[],devices=[],management={workspaces:[],projects:[],agents:[]},submissionId=null,snapshot='',selectedTask=null,taskCache=[];
+let projects=[],devices=[],management={workspaces:[],projects:[],agents:[]},submissionId=null,snapshot='',selectedTask=null,taskCache=[],projectGithub=null,githubOptions=[];
 const workspaceId=()=>el('workspace').value;
 const visibleProjects=()=>management.projects.filter(p=>p.workspaceId===workspaceId());
 const execution=p=>projects.find(e=>e.id===p?.executionProjectId);
@@ -203,19 +217,24 @@ function settingCard(list,title,description,edit){const card=node('article',unde
 function runtimeStatus(d){return d.revoked?'登録解除済み':Date.now()-d.seen<45000?'オンライン':'オフライン';}
 function renderRuntimes(){el('runtime-list').replaceChildren();for(const d of devices){const card=settingCard(el('runtime-list'),d.label,d.platform+' · '+runtimeStatus(d));const dl=node('dl');dl.append(node('dt','ランタイムID'),node('dd',d.id),node('dt','登録済み実行先'),node('dd',projects.filter(p=>p.deviceId===d.id).map(p=>p.alias).join(', ')||'なし'));card.append(dl);}}
 function runtimeModels(){const selected=el('agent-model').value;el('agent-model').replaceChildren();const allowed=[...new Set(projects.filter(p=>p.deviceId===el('agent-runtime').value).flatMap(p=>p.models))];for(const m of allowed)option(el('agent-model'),m,m);if(allowed.includes(selected))el('agent-model').value=selected;}
-function editProject(p){el('project-id').value=p?.id||'';el('project-name').value=p?.name||'';el('project-description').value=p?.description||'';el('project-attributes').value=JSON.stringify(p?.attributes||{},null,2);if(p)el('execution-project').value=p.executionProjectId;el('project-name').focus();}
+function showGithub(){el('github-selected').textContent=projectGithub?'紐づけ：'+projectGithub.fullName+' / GitHub account '+projectGithub.accountId:'リポジトリ未設定';}
+function editProject(p){el('project-id').value=p?.id||'';el('project-name').value=p?.name||'';el('project-description').value=p?.description||'';el('project-attributes').value=JSON.stringify(p?.attributes||{},null,2);el('execution-project').value=p?.executionProjectId||'';projectGithub=p?.github||null;showGithub();el('project-name').focus();}
 function editAgent(a){el('agent-id').value=a?.id||'';el('agent-name').value=a?.name||'';el('agent-instructions').value=a?.instructions||'';el('agent-enabled').checked=a?.enabled??true;if(a)el('agent-runtime').value=a.deviceId;runtimeModels();if(a)el('agent-model').value=a.model;el('agent-name').focus();}
-function renderManagement(){const w=management.workspaces.find(w=>w.id===workspaceId());el('workspace-name').textContent=w?.name||'';el('workspace-edit-name').value=w?.name||'';el('project-list').replaceChildren();for(const p of visibleProjects()){const card=settingCard(el('project-list'),p.name,p.description||'説明なし',()=>editProject(p));card.append(node('p','実行先：'+(execution(p)?.alias||'利用不可'),'meta'));const dl=node('dl');for(const [k,v] of Object.entries(p.attributes))dl.append(node('dt',k),node('dd',v));card.append(dl);const b=node('button','このプロジェクトのタスク');b.onclick=()=>{el('task-filter').value=p.id;location.hash='tasks';snapshot='';tasks().catch(rejected);};card.append(b);}
+function renderManagement(){const w=management.workspaces.find(w=>w.id===workspaceId());el('workspace-name').textContent=w?.name||'';el('workspace-edit-name').value=w?.name||'';el('project-list').replaceChildren();for(const p of visibleProjects()){const card=settingCard(el('project-list'),p.name,p.description||'説明なし',()=>editProject(p));card.append(node('p','実行先：'+(execution(p)?.alias||'未設定・利用不可'),'meta'));if(p.github){const a=node('a',p.github.fullName);a.href='https://github.com/'+p.github.fullName;a.target='_blank';a.rel='noopener noreferrer';card.append(a);}const dl=node('dl');for(const [k,v] of Object.entries(p.attributes))dl.append(node('dt',k),node('dd',v));card.append(dl);const b=node('button','このプロジェクトのタスク');b.onclick=()=>{el('task-filter').value=p.id;location.hash='tasks';snapshot='';tasks().catch(rejected);};card.append(b);}
 el('agent-list').replaceChildren();for(const a of management.agents.filter(a=>a.workspaceId===workspaceId())){const card=settingCard(el('agent-list'),a.name,(a.enabled?'有効':'無効')+' · Pi / 通常設定',()=>editAgent(a));card.append(node('p',devices.find(d=>d.id===a.deviceId)?.label||'利用不可','meta'),node('p',a.model,'meta'),node('p',a.instructions||'追加指示なし','meta'));}
-const target=el('execution-project').value;el('execution-project').replaceChildren();for(const p of projects)option(el('execution-project'),p.id,p.alias+' — '+devices.find(d=>d.id===p.deviceId)?.label);if(projects.some(p=>p.id===target))el('execution-project').value=target;
+const target=el('execution-project').value;el('execution-project').replaceChildren();option(el('execution-project'),'','未設定（リポジトリ管理のみ）');for(const p of projects)option(el('execution-project'),p.id,p.alias+' — '+devices.find(d=>d.id===p.deviceId)?.label);if(projects.some(p=>p.id===target))el('execution-project').value=target;
 const runtime=el('agent-runtime').value;el('agent-runtime').replaceChildren();for(const d of devices.filter(d=>!d.revoked))option(el('agent-runtime'),d.id,d.label+' — '+runtimeStatus(d));if(devices.some(d=>d.id===runtime&&!d.revoked))el('agent-runtime').value=runtime;runtimeModels();renderRuntimes();renderSummary();}
-el('workspace').onchange=()=>{submissionId=null;el('project-id').value='';el('agent-id').value='';el('project-name').value='';el('agent-name').value='';el('project-description').value='';el('project-attributes').value='{}';el('agent-instructions').value='';el('prompt').value='';el('title').value='';selectedTask=null;el('result').textContent='';selections();renderManagement();snapshot='';tasks().catch(rejected);};
+el('workspace').onchange=()=>{submissionId=null;el('project-id').value='';el('agent-id').value='';el('project-name').value='';el('agent-name').value='';el('project-description').value='';el('project-attributes').value='{}';el('agent-instructions').value='';el('prompt').value='';el('title').value='';projectGithub=null;showGithub();el('execution-project').value='';selectedTask=null;el('result').textContent='';selections();renderManagement();snapshot='';tasks().catch(rejected);};
 el('task-filter').onchange=()=>{snapshot='';tasks().catch(rejected);};
 el('agent-runtime').onchange=runtimeModels;
 on('project-new',async()=>editProject());on('agent-new',async()=>editAgent());
 on('workspace-save',async()=>{await call('workspace-save',{id:workspaceId(),name:el('workspace-edit-name').value.trim()});await refresh();el('message').textContent='ワークスペース名を保存しました。';});
 on('workspace-create',async()=>{const id=crypto.randomUUID();await call('workspace-save',{id,name:el('workspace-new-name').value.trim()});await refresh();el('workspace').value=id;el('workspace').onchange();el('workspace-new-name').value='';el('message').textContent='ワークスペースを作成しました。';});
-on('project-save',async()=>{const id=el('project-id').value||crypto.randomUUID();el('project-id').value=id;await call('managed-project-save',{id,workspaceId:workspaceId(),name:el('project-name').value.trim(),description:el('project-description').value,executionProjectId:el('execution-project').value,attributes:JSON.parse(el('project-attributes').value)});await refresh();el('message').textContent='プロジェクトを保存しました。';});
+async function loadGithub(){for(const id of ['github-load','github-search','github-select','project-save'])el(id).disabled=true;try{const selected=Number(el('github-account').value)||undefined;const v=await call('github-repos',{accountId:selected,query:el('github-query').value});el('github-account').replaceChildren();if(v.accounts.length>1)option(el('github-account'),'','アカウントを選択してください');for(const a of v.accounts)option(el('github-account'),String(a.id),a.label);if(v.accounts.some(a=>a.id===selected))el('github-account').value=String(selected);githubOptions=v.repos;el('github-repo').replaceChildren();for(const r of v.repos)option(el('github-repo'),r.value,r.title+' · '+(r.meta||''));el('message').textContent=!v.accounts.length?'接続済みの有効なGitHubアカウントがありません。OSの接続設定を確認してください。':v.repos.length+'件のリポジトリを取得しました。';}finally{for(const id of ['github-load','github-search','github-select','project-save'])el(id).disabled=false;}}
+on('github-load',loadGithub);on('github-search',loadGithub);el('github-account').onchange=()=>loadGithub().catch(rejected);
+on('github-select',async()=>{const r=githubOptions.find(r=>r.value===el('github-repo').value),accountId=Number(el('github-account').value);if(!r||!accountId)return;projectGithub={accountId,fullName:r.value};if(!el('project-name').value.trim())el('project-name').value=r.value.split('/')[1];if(!el('project-description').value.trim())el('project-description').value=r.subtitle||'';showGithub();});
+on('github-clear',async()=>{projectGithub=null;showGithub();});
+on('project-save',async()=>{const id=el('project-id').value||crypto.randomUUID();el('project-id').value=id;el('project-save').disabled=true;try{await call('managed-project-save',{id,workspaceId:workspaceId(),name:el('project-name').value.trim(),description:el('project-description').value,executionProjectId:el('execution-project').value||undefined,attributes:JSON.parse(el('project-attributes').value),github:projectGithub||undefined});await refresh();el('message').textContent='プロジェクトを保存しました。';}finally{el('project-save').disabled=false;}});
 on('agent-save',async()=>{const id=el('agent-id').value||crypto.randomUUID();el('agent-id').value=id;await call('agent-save',{id,workspaceId:workspaceId(),name:el('agent-name').value.trim(),deviceId:el('agent-runtime').value,model:el('agent-model').value,instructions:el('agent-instructions').value,enabled:el('agent-enabled').checked,harness:'pi',profile:'local'});await refresh();el('message').textContent='エージェントを保存しました。';});
 el('project').onchange=()=>agents();el('agent').onchange=()=>models();el('title').oninput=el('model').onchange=el('prompt').oninput=()=>submissionId=null;
 on('submit',async()=>{const managedProjectId=el('project').value,projectId=execution(visibleProjects().find(p=>p.id===managedProjectId))?.id,agentId=el('agent').value||undefined,model=el('model').value,prompt=el('prompt').value,title=el('title').value.trim()||undefined;

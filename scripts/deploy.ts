@@ -618,6 +618,10 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   }
 
   if (config.piDaemon?.enabled) {
+    // The owner portal reads the existing user's GitHub configurator through the verified owner session.
+    // No GitHub token or account DO is copied into the Custom Worker.
+    customGatekeeper.services = [...(customGatekeeper.services ?? []),
+      { binding: 'WORKSHOP_BACKEND', service: config.workers.workshop.name }];
     Object.assign(customGatekeeper.vars, { PI_DAEMON_ENABLED: true,
       CF_ACCESS_ISS: config.access.issuer, CF_ACCESS_AUD: config.access.audience,
       ADMINS: config.access.admins, PUBLIC_BASE_URL: origin });

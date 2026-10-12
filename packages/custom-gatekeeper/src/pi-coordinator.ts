@@ -1,9 +1,10 @@
 import { DurableObject } from 'cloudflare:workers';
+import { repoName, type GitHubRepoLink } from './github-projects.js';
 
 export type Project = { id: string; deviceId: string; alias: string; models: string[] };
 export type Workspace = { id: string; name: string };
 export type ManagedProject = { id: string; workspaceId: string; name: string; description: string;
-  executionProjectId: string; attributes: Record<string, string> };
+  executionProjectId?: string; attributes: Record<string, string>; github?: GitHubRepoLink };
 export type Agent = { id: string; workspaceId: string; name: string; deviceId: string;
   model: string; instructions: string; enabled: boolean; harness: 'pi'; profile: 'local'; revision: number };
 export type TaskRecord = {
@@ -84,7 +85,7 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
     if (op === 'managed-project-save') {
       const id = text(data.id, 64); const w = workspace(data.workspaceId);
       const execution = s.projects.find(p => p.id === data.executionProjectId);
-      if (!execution || s.devices.find(d => d.id === execution.deviceId)?.revoked !== false) throw new Error('Unavailable execution target');
+      if (data.executionProjectId !== undefined && (!execution || s.devices.find(d => d.id === execution.deviceId)?.revoked !== false)) throw new Error('Unavailable execution target');
       if (!data.attributes || typeof data.attributes !== 'object' || Array.isArray(data.attributes)) throw new Error('Invalid attributes');
       const entries = Object.entries(data.attributes);
       if (entries.length > 10) throw new Error('Attribute limit');
@@ -92,8 +93,11 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       const prior = s.managedProjects!.find(p => p.id === id);
       // Project membership is stable; moving queued/history across workspaces is unsupported.
       if (prior && prior.workspaceId !== w.id) throw new Error('Workspace mismatch');
+      const github = data.github as GitHubRepoLink | undefined;
+      if (github && (!Number.isSafeInteger(github.accountId) || github.accountId <= 0 || !Number.isFinite(github.verifiedAt))) throw new Error('Invalid GitHub link');
       const value: ManagedProject = { id, workspaceId: w.id, name: text(data.name, 120),
-        description: optionalText(data.description, 1000), executionProjectId: execution.id, attributes };
+        description: optionalText(data.description, 1000), executionProjectId: execution?.id, attributes,
+        github: github ? { accountId: github.accountId, fullName: repoName(github.fullName), verifiedAt: github.verifiedAt } : undefined };
       if (prior) Object.assign(prior, value);
       else { if (s.managedProjects!.length >= 60) throw new Error('Project limit'); s.managedProjects!.push(value); }
       return { id };
