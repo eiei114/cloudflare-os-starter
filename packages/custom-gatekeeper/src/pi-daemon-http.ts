@@ -32,6 +32,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
     'management', 'workspace-save', 'managed-project-save', 'agent-save'];
   if (!(isDevice ? deviceOps : ownerOps).includes(op)) return json({ error: 'Not found' }, 404);
   if (req.method !== (op === '' ? 'GET' : 'POST')) return json({ error: 'Method not allowed' }, 405);
+  let phase = 'authentication';
   try {
     let auth: { owner?: boolean; hash?: string } = {};
     if (!isDevice) {
@@ -71,6 +72,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
       }
     }
     if (op === '') return portal();
+    phase = 'body';
     if (req.headers.get('content-type') !== 'application/json') return json({ error: 'JSON required' }, 415);
     // Stream-bound input: Content-Length is untrusted and may be absent.
     const reader = req.body?.getReader();
@@ -84,6 +86,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
     for (const c of chunks) { buffer.set(c, offset); offset += c.length; }
     const data = JSON.parse(new TextDecoder().decode(buffer));
     if (!data || typeof data !== 'object' || Array.isArray(data)) return json({ error: 'Invalid body' }, 400);
+    phase = 'coordinator';
     if (op === 'pair-code') {
       const code = randomToken();
       const result = await callCoordinator(env, op, { ...data, hash: await digest(code) }, auth);
@@ -107,8 +110,11 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
     }
     // Never let request data select owner authority or change its token identity.
     return json(await callCoordinator(env, op, data, auth));
-  } catch {
+  } catch (error) {
     // Do not expose prompts, tokens, provider errors or private stack traces.
+    if (!isDevice) console.warn('Pi owner request rejected', { op, phase,
+      category: error instanceof TypeError ? 'type' : error instanceof SyntaxError ? 'syntax' :
+        error instanceof Error && error.message.includes('Operation denied') ? 'operation' : 'validation' });
     return json({ error: 'Request rejected' }, 400);
   }
 }
