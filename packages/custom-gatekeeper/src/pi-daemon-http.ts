@@ -4,10 +4,16 @@ import type { PiConsoleEnv } from './pi-console.js';
 
 export type DaemonEnv = PiConsoleEnv & {
   PI_DAEMON_ENABLED?: boolean;
+  PI_DAEMON_ACCESS_AUD?: string;
   PI_COORDINATOR?: DurableObjectNamespace<PiCoordinator>;
 };
 const prefix = '/gatekeeper/custom/runner/';
 const keys = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+function accessKeys(issuer: string) {
+  let jwks = keys.get(issuer);
+  if (!jwks) { jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`)); keys.set(issuer, jwks); }
+  return jwks;
+}
 const json = (value: unknown, status = 200) => Response.json(value, {
   status, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
 });
@@ -35,16 +41,28 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
       const token = req.headers.get('cf-access-jwt-assertion');
       if (!token) return json({ error: 'Owner authentication required' }, 401);
       const issuer = env.CF_ACCESS_ISS.replace(/\/$/, '');
-      let jwks = keys.get(issuer);
-      if (!jwks) { jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`)); keys.set(issuer, jwks); }
-      const { payload } = await jwtVerify(token, jwks, { issuer, audience: env.CF_ACCESS_AUD,
+      const { payload } = await jwtVerify(token, accessKeys(issuer), { issuer, audience: env.CF_ACCESS_AUD,
         algorithms: ['RS256'], requiredClaims: ['exp', 'iat', 'email'] });
       if (typeof payload.email !== 'string' || !env.ADMINS.includes(payload.email)) return json({ error: 'Owner only' }, 403);
       auth = { owner: true };
     } else {
       // Pair is one-use, high-entropy authentication; all other calls require the device credential.
       if (req.headers.get('origin')) return json({ error: 'Browser origin forbidden' }, 403);
-      if (req.headers.get('cookie')) return json({ error: 'Browser cookies forbidden' }, 403);
+      const cookie = req.headers.get('cookie');
+      // Access injects CF_Authorization into service requests before Worker delivery.
+      // Never authenticate by cookie. Accept only that edge cookie, backed by a signed
+      // service assertion for the separate device app; owner/browser JWTs do not qualify.
+      if (cookie && cookie.split(';').some(part => part.trim().split('=')[0] !== 'CF_Authorization'))
+        return json({ error: 'Browser cookies forbidden' }, 403);
+      if (env.PI_DAEMON_ACCESS_AUD) {
+        const assertion = req.headers.get('cf-access-jwt-assertion');
+        if (!assertion || !env.CF_ACCESS_ISS) return json({ error: 'Service authentication required' }, 401);
+        const issuer = env.CF_ACCESS_ISS.replace(/\/$/, '');
+        const { payload } = await jwtVerify(assertion, accessKeys(issuer), { issuer, audience: env.PI_DAEMON_ACCESS_AUD,
+          algorithms: ['RS256'], requiredClaims: ['exp', 'iat', 'common_name'] });
+        if (typeof payload.common_name !== 'string' || !payload.common_name || payload.email !== undefined)
+          return json({ error: 'Service identity required' }, 403);
+      } else if (cookie) return json({ error: 'Browser cookies forbidden' }, 403);
       if (op !== 'pair') {
         const token = req.headers.get('authorization')?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
         if (!token) return json({ error: 'Device authentication required' }, 401);

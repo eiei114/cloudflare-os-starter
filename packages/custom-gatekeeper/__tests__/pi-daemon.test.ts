@@ -139,6 +139,32 @@ describe('HTTP fail-closed boundaries', () => {
 
 describe('owner portal and observation enforcement', () => {
   afterEach(() => vi.unstubAllGlobals());
+  it('requires a device-app service assertion and ignores only its injected Access cookie', async () => {
+    const keys = await generateKeyPair('RS256');
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ keys: [{ ...await exportJWK(keys.publicKey),
+      kid: 'device-service', alg: 'RS256', use: 'sig' }] })));
+    const e = { ...testEnv, PI_DAEMON_ENABLED: true, PUBLIC_BASE_URL: 'https://os.example.com',
+      CF_ACCESS_ISS: 'https://device-service-test.cloudflareaccess.com', CF_ACCESS_AUD: 'owner-aud',
+      PI_DAEMON_ACCESS_AUD: 'device-aud', ADMINS: ['owner@example.com'] };
+    const token = (payload: Record<string, unknown>, aud = e.PI_DAEMON_ACCESS_AUD) => new SignJWT(payload)
+      .setProtectedHeader({ alg: 'RS256', kid: 'device-service' }).setIssuer(e.CF_ACCESS_ISS)
+      .setAudience(aud).setIssuedAt().setExpirationTime('5m').sign(keys.privateKey);
+    const request = (jwt?: string, cookie = 'CF_Authorization=edge-injected', code = '') => fetchPiDaemon(new Request(
+      e.PUBLIC_BASE_URL + '/gatekeeper/custom/runner/device/pair', { method: 'POST',
+        headers: { 'content-type': 'application/json', cookie, ...(jwt ? { 'cf-access-jwt-assertion': jwt } : {}) },
+        body: JSON.stringify({ code }) }), e);
+    expect((await request())?.status).toBe(401);
+    const service = await token({ common_name: 'dedicated-service', type: 'app' });
+    expect((await request(service, 'owner=browser'))?.status).toBe(403);
+    expect((await request(await token({ common_name: 'dedicated-service' }, e.CF_ACCESS_AUD)))?.status).toBe(400);
+    expect((await request(await token({ common_name: 'dedicated-service', email: 'owner@example.com' })))?.status).toBe(403);
+    const code = 'b'.repeat(64);
+    const { digest } = await import('../src/pi-coordinator.js');
+    await callCoordinator(testEnv, 'pair-code', { hash: await digest(code), label: 'service-test', platform: 'darwin' }, owner);
+    expect((await request(service, 'CF_Authorization=edge-injected', code))?.status).toBe(200);
+    // Cookie alone is never authority, even after successful pairing.
+    expect((await request(undefined, 'CF_Authorization=edge-injected', code))?.status).toBe(401);
+  });
   it('checks JWT owner and audience before issuing a code; paired device remains separate', async () => {
     const keys = await generateKeyPair('RS256');
     const jwk = { ...await exportJWK(keys.publicKey), kid: 'daemon-test', alg: 'RS256', use: 'sig' };

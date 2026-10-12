@@ -216,6 +216,8 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     if (typeof config.piDaemon.enabled !== 'boolean') throw new Error('piDaemon.enabled must be boolean.');
     if (config.piDaemon.enabled && config.customGatekeeper.enabled === false) throw new Error('Pi daemon requires custom Worker.');
     if (config.piDaemon.enabled && config.access.admins.length !== 1) throw new Error('Pi daemon MVP requires one owner and an owner-only Access policy.');
+    if (config.piDaemon.accessAudience !== undefined && !/^[a-f0-9]{64}$/.test(config.piDaemon.accessAudience))
+      throw new Error('Pi daemon device Access audience must be an exact AUD tag.');
   }
   if (config.piRunner) {
     if (typeof config.piRunner.enabled !== 'boolean') throw new Error('piRunner.enabled must be boolean.');
@@ -619,6 +621,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     Object.assign(customGatekeeper.vars, { PI_DAEMON_ENABLED: true,
       CF_ACCESS_ISS: config.access.issuer, CF_ACCESS_AUD: config.access.audience,
       ADMINS: config.access.admins, PUBLIC_BASE_URL: origin });
+    if (config.piDaemon.accessAudience) customGatekeeper.vars.PI_DAEMON_ACCESS_AUD = config.piDaemon.accessAudience;
     customGatekeeper.durable_objects = { bindings: [
       ...(customGatekeeper.durable_objects?.bindings ?? []), { name: 'PI_COORDINATOR', class_name: 'PiCoordinator' },
     ] };

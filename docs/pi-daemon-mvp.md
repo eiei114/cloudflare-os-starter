@@ -44,7 +44,7 @@ The human owner portal is a separate authenticated approval surface. `submit` re
 Enable only after a separate production mutation review:
 
 ```jsonc
-"piDaemon": { "enabled": true }
+"piDaemon": { "enabled": true, "accessAudience": "<64-hex-device-app-aud>" }
 ```
 
 This adds `PI_COORDINATOR` and migration `pi-daemon-v1` for `PiCoordinator` / `PiProjectGatekeeper` in the existing private Custom Worker. Old `CustomGatekeeper`, existing KV/R2 and GitHub connection remain unchanged. Disabled/default configurations emit no daemon binding or migration.
@@ -87,6 +87,8 @@ node packages/pi-daemon/daemon.mjs run
 ```
 
 The portal validates signed Access JWT issuer/audience/expiry/email and canonical Origin for writes. Device routes reject browser cookies/Origin and require a separate bearer. Pairing consumes a 256-bit one-use code; only token hashes are stored remotely. Device authentication cannot submit jobs or revoke devices. A service JWT without owner email cannot operate the owner portal. The daemon publishes alias/model metadata and prints opaque project URLs, not absolute paths, prompts, results or credentials.
+
+Cloudflare Access may inject a `CF_Authorization` cookie into authenticated service requests before delivering them to the Worker. The Worker never authenticates by that cookie: when `accessAudience` is configured, every device request requires a signed Access assertion for the **device** application, with a service `common_name` and no owner email, in addition to the one-use pairing code/device bearer. Only the injected Access cookie name is tolerated; other browser cookies and nonempty Origin remain denied. Without the separate audience, requests containing that cookie fail closed. Do not solve transport failures by removing Access or accepting the owner's audience on device routes.
 
 ## Login startup and stop
 

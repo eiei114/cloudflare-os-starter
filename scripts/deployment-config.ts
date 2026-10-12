@@ -120,7 +120,7 @@ export interface DeploymentConfig {
   /** Optional owner-only Pi human console. Token is installed as a Custom Worker secret. */
   piRunner?: { enabled: boolean; url?: string };
   /** Optional outbound local Pi daemon. Disabled unless explicitly enabled. */
-  piDaemon?: { enabled: boolean };
+  piDaemon?: { enabled: boolean; accessAudience?: string };
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { enabled?: boolean; name: string; message: string };
