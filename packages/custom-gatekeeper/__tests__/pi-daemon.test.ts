@@ -152,6 +152,13 @@ async function pairedProject() {
   return { projectId: projects[0].id, hash };
 }
 describe('real workerd approval facet', () => {
+  it('persists repo-only projects with no execution binding', async () => {
+    const id = crypto.randomUUID();
+    await callCoordinator(testEnv, 'managed-project-save', { id, workspaceId: 'personal', name: 'Repository only',
+      attributes: { stage: 'pilot' }, github: { accountId: 1, fullName: 'owner/repo', verifiedAt: Date.now() } }, owner);
+    const m = await callCoordinator(testEnv, 'management', {}, owner);
+    expect(m.projects.find((p: any) => p.id === id)).toMatchObject({ github: { accountId: 1, fullName: 'owner/repo' } });
+  });
   it('stores management metadata and immutable agent execution snapshots in real DO transactions', async () => {
     const { projectId, hash } = await pairedProject();
     const inventory = await callCoordinator(testEnv, 'inventory', {}, owner);
