@@ -73,6 +73,12 @@ Before rollout: review exact commits, Worker identities, migrations, owner/Acces
 
 ## One-time local setup (after rollout approval)
 
+After pairing/installing the daemon, optional [native tray controls](../packages/pi-tray/README.md)
+provide start/stop/restart, daemon login-autostart, status, task-board/log links and UI-only quit.
+The tray reads only a nonsecret local status snapshot; it adds no cloud calls or credential sync.
+Mac UI/service actions have been verified; Windows controls are implemented and cross-checked,
+not yet tested on a real Windows computer. Existing daemon startup commands below remain supported.
+
 Node >=24.19 and repository-pinned pnpm 11.17; same checkout/package on the native Mac or Windows host:
 
 ```sh

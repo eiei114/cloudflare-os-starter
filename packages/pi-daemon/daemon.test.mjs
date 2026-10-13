@@ -51,6 +51,10 @@ test('idle daemon claims once per thirty seconds without redundant heartbeat', a
     assert.equal(sleeps.reduce((a, b) => a + b, 0), 30_000);
     assert.equal(sleeps.every(ms => ms === 1000), true);
     await assert.rejects(access(path.join(dir, 'daemon.lock')));
+    const status = JSON.parse(await readFile(path.join(dir, 'runtime-status.json'), 'utf8'));
+    assert.deepEqual(Object.keys(status).toSorted(), ['lastContactAt', 'phase', 'pid', 'url', 'version']);
+    assert.equal(status.phase, 'stopped'); assert.equal(status.url, 'https://os.example.com');
+    assert.equal((await stat(path.join(dir, 'runtime-status.json'))).mode & 0o777, 0o600);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 test('rotation journals new bearer and recovers a lost response after overlap expires', async () => {

@@ -94,8 +94,18 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
   const lock = await open(lockFile, 'wx', 0o600);
   await lock.writeFile(JSON.stringify({ pid: process.pid })); await lock.close();
   const receiptFile = path.join(dir, 'receipt.json');
+  let phase = 'starting', lastContactAt = 0;
+  const publish = () => writePrivate(path.join(dir, 'runtime-status.json'), {
+    version: 1, pid: process.pid, phase, lastContactAt, url: config.url,
+  }).catch(() => { /* Cosmetic status must not alter task/credential safety. */ });
+  const transport = request;
+  request = async (op, body) => {
+    try { const value = await transport(op, body); lastContactAt = Date.now(); await publish(); return value; }
+    catch (error) { await publish(); throw error; }
+  };
   let current;
   try {
+    await publish();
     // Journal the proposed secret before sending. A lost response retries the same rotation,
     // with the old bearer valid for a bounded ten-minute overlap on the server.
     const rotateCredential = async () => {
@@ -121,6 +131,7 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
       await request('finish', recovered.report); await unlink(receiptFile);
     }
     const catalog = await request('catalog', { projects: config.projects.map(({ alias, models }) => ({ alias, models })) });
+    phase = 'idle'; await publish();
     for (const p of catalog.projects) console.log(`Pi project: pi-project://projects/${p.id}`);
     let retryMs = 5000;
     while (true) {
@@ -144,9 +155,10 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
       if (!project) throw new Error('Claimed project/model not allowed locally');
       const receipt = { id: task.id, attempt: task.attempt };
       await writePrivate(receiptFile, receipt); // BEFORE spawning Pi
+      phase = 'running'; await publish();
       const controller = new AbortController(); current = controller;
       let progress = 'starting';
-      const halt = () => controller.abort(); stopSignal?.addEventListener('abort', halt, { once: true });
+      const halt = () => { phase = 'stopping'; void publish(); controller.abort(); }; stopSignal?.addEventListener('abort', halt, { once: true });
       let timer = setTimeout(halt, Math.max(0, 35_000 - (Date.now() - claimStarted))); let running = true;
       if (stopSignal?.aborted) halt();
       const heartbeat = (async () => {
@@ -156,6 +168,7 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
           try {
             const renewalStarted = Date.now();
             const ack = await request('heartbeat', { ...receipt, progress });
+            if (!running || controller.signal.aborted) break;
             if (ack.cancel) halt();
             else { clearTimeout(timer); timer = setTimeout(halt, Math.max(0, 35_000 - (Date.now() - renewalStarted))); }
           } catch { /* Independent timer stops local execution before server lease expires. */ }
@@ -177,8 +190,9 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
       await writePrivate(receiptFile, { ...receipt, report });
       await request('finish', report); await unlink(receiptFile);
       if (outcome.status === 'uncertain') throw new Error('Uncertain execution: device quarantined; inspect locally before re-pairing');
+      phase = 'idle'; await publish();
     }
-  } finally { current?.abort(); await unlink(lockFile); }
+  } finally { current?.abort(); phase = await access(receiptFile).then(() => 'attention', () => 'stopped'); await publish(); await unlink(lockFile); }
 }
 
 export function safeSessionDirectory(dir, id) {
