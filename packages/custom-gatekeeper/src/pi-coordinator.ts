@@ -245,7 +245,9 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
 export class PiCoordinator extends DurableObject<Cloudflare.Env> {
   async command(op: string, dataJson: string, auth: { owner?: boolean; hash?: string }): Promise<string> {
     return this.ctx.storage.transaction(async tx => {
-      const state = await tx.get<CoordinatorState>('state') ?? emptyState();
+      const stored = await tx.get<CoordinatorState>('state');
+      const priorMetadata = JSON.stringify(stored);
+      const state = stored ?? emptyState();
       const priorTasks = await tx.list<TaskRecord>({ prefix: 'task:' });
       const priorJson = new Map([...priorTasks].map(([key, task]) => [key, JSON.stringify(task)]));
       state.tasks = [...priorTasks.values()];
@@ -256,8 +258,11 @@ export class PiCoordinator extends DurableObject<Cloudflare.Env> {
         if (priorJson.get(key) !== JSON.stringify(task)) await tx.put(key, task);
       }
       const metadata = { ...state, tasks: [] };
-      if (new TextEncoder().encode(JSON.stringify(metadata)).length > 90_000) throw new Error('Metadata storage limit');
-      await tx.put('state', metadata);
+      const metadataJson = JSON.stringify(metadata);
+      if (new TextEncoder().encode(metadataJson).length > 90_000) throw new Error('Metadata storage limit');
+      // Read-only observations still persist lease expiry/legacy initialization,
+      // but an unchanged snapshot must not rewrite the metadata row.
+      if (priorMetadata !== metadataJson) await tx.put('state', metadata);
       return JSON.stringify(result);
     });
   }

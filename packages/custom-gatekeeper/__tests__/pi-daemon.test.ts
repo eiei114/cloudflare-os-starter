@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { PiProjectImpl } from '../src/pi-project.js';
@@ -152,6 +153,32 @@ async function pairedProject() {
   return { projectId: projects[0].id, hash };
 }
 describe('real workerd approval facet', () => {
+  it('skips unchanged metadata writes but persists observed lease expiry in SQLite', async () => {
+    const { projectId, hash } = await pairedProject();
+    const id = crypto.randomUUID();
+    await callCoordinator(testEnv, 'enqueue', { id, projectId, prompt: 'test', model: 'cursor/model' }, owner);
+    await callCoordinator(testEnv, 'claim', { attempt: 'test-attempt' }, { hash });
+    await runInDurableObject(testEnv.PI_COORDINATOR.getByName('owner'), async (instance, state) => {
+      const transaction = state.storage.transaction.bind(state.storage), writes: string[] = [];
+      const spy = vi.spyOn(state.storage, 'transaction').mockImplementation(callback => transaction(tx => callback(new Proxy(tx, {
+        get(target, key) {
+          if (key === 'put') return async (name: string, value: unknown) => { writes.push(name); return target.put(name, value); };
+          const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }))));
+      try {
+        for (const op of ['tasks', 'management', 'inventory']) await instance.command(op, '{}', owner);
+        expect(writes).toEqual([]);
+        const task = await state.storage.get<any>('task:' + id);
+        await state.storage.put('task:' + id, { ...task, leaseUntil: Date.now() - 1 });
+        await instance.command('tasks', '{}', owner);
+        expect(writes).toEqual(['task:' + id]);
+        expect(await state.storage.get('task:' + id)).toMatchObject({ status: 'uncertain' });
+        await instance.command('tasks', '{}', owner);
+        expect(writes).toHaveLength(1);
+      } finally { spy.mockRestore(); }
+    });
+  });
   it('persists repo-only projects with no execution binding', async () => {
     const id = crypto.randomUUID();
     await callCoordinator(testEnv, 'managed-project-save', { id, workspaceId: 'personal', name: 'Repository only',
@@ -288,6 +315,27 @@ describe('owner portal and observation enforcement', () => {
     expect(html).not.toContain('innerHTML');
     // Parse the actual emitted owner script, not a separately maintained copy.
     expect(() => new Function(html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)![1])).not.toThrow();
+    // Exercise the actual emitted polling functions with a clock, not real time.
+    const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)![1];
+    const functions = script.split('\n').filter(line => /^(async )?function poll(Delay|Owner)\(/.test(line)).join('\n');
+    let now = 0; const document = { hidden: false }, calls: string[] = [];
+    const harness = new Function('call', 'tasks', 'renderRuntimes', 'document', 'Date', `
+      let ready=true,polling=false,currentPage='tasks',nextPollAt=0,taskCache=[],devices=[];
+      const workspaceId=()=> 'personal';
+      ${functions}
+      return {tick:pollOwner,page:p=>{currentPage=p;nextPollAt=0;},active:s=>{taskCache=[{status:s}];}};
+    `)(async (op: string) => { calls.push(op); return { devices: [] }; },
+      async () => { calls.push('tasks'); }, () => {}, document, { now: () => now });
+    await harness.tick(); now = 29_999; await harness.tick(); expect(calls).toEqual(['tasks']);
+    now = 30_000; await harness.tick(); expect(calls).toHaveLength(2);
+    harness.active('running'); await harness.tick(true); now += 4999; await harness.tick(); expect(calls).toHaveLength(3);
+    now += 1; await harness.tick(); expect(calls).toHaveLength(4);
+    for (const page of ['projects', 'agents', 'settings']) { harness.page(page); await harness.tick(true); }
+    expect(calls).toHaveLength(4);
+    harness.page('runtimes'); await harness.tick(true); expect(calls.at(-1)).toBe('inventory');
+    document.hidden = true; harness.page('tasks'); await harness.tick(true); expect(calls).toHaveLength(5);
+    document.hidden = false;
+    await Promise.all([harness.tick(true), harness.tick(true)]); expect(calls).toHaveLength(6);
     const { projectId } = await pairedProject();
     const jwt = await token('owner@example.com');
     const post = (op: string, body: unknown, origin = e.PUBLIC_BASE_URL) => fetchPiDaemon(new Request(

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
-import { stateDirectory, validateConfig, client, writePrivate, runDaemon } from './daemon.mjs';
+import { stateDirectory, validateConfig, client, writePrivate, runDaemon, waitForPoll } from './daemon.mjs';
 import { macPlist, windowsInstall } from './install.mjs';
 import { runPi } from './pi-process.mjs';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,46 @@ test('device requests use bearer, optional Access service credentials, no cookie
     return Response.json({});
   });
   await request('heartbeat', {});
+});
+test('idle daemon claims once per thirty seconds without redundant heartbeat', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-daemon-test-'));
+  const controller = new AbortController(), requests = [], sleeps = [];
+  try {
+    await runDaemon({ url: 'https://os.example.com', projects: [{ alias: 'test', cwd: dir, models: ['cursor/model'] }] }, {}, dir, {
+      stopSignal: controller.signal, request: async op => {
+        requests.push(op); return op === 'catalog' ? { projects: [] } : { task: null };
+      }, pause: async ms => { sleeps.push(ms); if (sleeps.length === 30) controller.abort(); },
+      execute: () => { throw Error('must not execute idle'); },
+    });
+    assert.deepEqual(requests, ['catalog', 'claim']);
+    assert.equal(sleeps.reduce((a, b) => a + b, 0), 30_000);
+    assert.equal(sleeps.every(ms => ms === 1000), true);
+    await assert.rejects(access(path.join(dir, 'daemon.lock')));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('local stop interrupts idle polling within one second', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-daemon-test-')); const sleeps = [];
+  try {
+    await waitForPoll(30_000, dir, undefined, async ms => {
+      sleeps.push(ms); await writePrivate(path.join(dir, 'stop.request'), {});
+    });
+    assert.deepEqual(sleeps, [1000]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('idle network failure backs off from five to thirty seconds, never executes', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-daemon-test-'));
+  const controller = new AbortController(), waits = []; let waited = 0;
+  try {
+    await runDaemon({ url: 'https://os.example.com', projects: [{ alias: 'test', cwd: dir, models: ['cursor/model'] }] }, {}, dir, {
+      stopSignal: controller.signal, request: async op => {
+        if (op === 'catalog') return { projects: [] };
+        assert.equal(op, 'claim'); waits.push(waited); throw Error('unavailable');
+      }, pause: async ms => { waited += ms; if (waited === 65_000) controller.abort(); },
+      execute: () => { throw Error('must not execute offline'); },
+    });
+    assert.deepEqual(waits, [0, 5000, 15_000, 35_000]);
+    assert.equal(waited, 65_000);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 function fakePi(handler) {
   return (_exe, args, opts) => {

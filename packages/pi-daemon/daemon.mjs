@@ -65,8 +65,18 @@ export function client(config, credential, fetcher = fetch) {
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// Idle delay changes cloud traffic only. Local stop remains responsive without
+// weakening the separate five-second heartbeat and lease timer during execution.
+export async function waitForPoll(ms, dir, stopSignal, pause = sleep) {
+  while (ms > 0) {
+    if (stopSignal?.aborted || await access(path.join(dir, 'stop.request')).then(() => true, () => false)) return;
+    const step = Math.min(ms, 1000);
+    await pause(step); ms -= step;
+  }
+}
+
 /** Single process/device. Exact durable report replay; never execution replay. */
-export async function runDaemon(config, credential, dir, { execute = runPi, stopSignal, request = client(config, credential) } = {}) {
+export async function runDaemon(config, credential, dir, { execute = runPi, stopSignal, request = client(config, credential), pause = sleep } = {}) {
   validateConfig(config);
   for (const p of config.projects) {
     p.cwd = await realpath(p.cwd);
@@ -93,15 +103,21 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
     }
     const catalog = await request('catalog', { projects: config.projects.map(({ alias, models }) => ({ alias, models })) });
     for (const p of catalog.projects) console.log(`Pi project: pi-project://projects/${p.id}`);
+    let retryMs = 5000;
     while (true) {
       if (stopSignal?.aborted) break;
       if (await access(path.join(dir, 'stop.request')).then(() => true, () => false)) break;
       let task; const claimStarted = Date.now();
       try {
-        await request('heartbeat', {});
+        // claim already updates lastSeen, so an additional idle heartbeat is redundant.
         ({ task } = await request('claim', { attempt: randomUUID() }));
-      } catch { await sleep(5000); continue; } // idle reconnect never executes or replays a job
-      if (!task) { await sleep(3000); continue; }
+        retryMs = 5000;
+      } catch {
+        await waitForPoll(retryMs, dir, stopSignal, pause);
+        retryMs = Math.min(30_000, retryMs * 2);
+        continue; // idle reconnect never executes or replays a job
+      }
+      if (!task) { await waitForPoll(30_000, dir, stopSignal, pause); continue; }
       const project = config.projects.find(p => p.alias === task.alias && p.models.includes(task.model));
       if (!project) throw new Error('Claimed project/model not allowed locally');
       const receipt = { id: task.id, attempt: task.attempt };
