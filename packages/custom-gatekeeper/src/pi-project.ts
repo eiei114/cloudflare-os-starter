@@ -73,6 +73,8 @@ export class PiProjectGatekeeper extends DurableObject<Cloudflare.Env, Props> im
   async stage(action: Action, queue: RpcStub<ApprovalQueue>): Promise<void> {
     if (action.kind === 'cancel') await this.taskStatus(action.id);
     const id = await this.ctx.storage.transaction(async tx => {
+      const pending = await tx.list({ prefix: 'action:', limit: 20 });
+      if (pending.size >= 20) throw new Error('Pending Pi action limit; approve or reject existing actions first');
       const sequence = (await tx.get<number>('sequence') ?? 0) + 1;
       await tx.put('sequence', sequence); await tx.put(`action:${sequence}`, action); return sequence;
     });

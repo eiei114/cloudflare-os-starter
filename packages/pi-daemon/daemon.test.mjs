@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
-import { stateDirectory, validateConfig, client, writePrivate, runDaemon, waitForPoll } from './daemon.mjs';
+import { stateDirectory, validateConfig, client, writePrivate, runDaemon, waitForPoll, safeSessionDirectory } from './daemon.mjs';
 import { macPlist, windowsInstall } from './install.mjs';
 import { runPi } from './pi-process.mjs';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +53,27 @@ test('idle daemon claims once per thirty seconds without redundant heartbeat', a
     await assert.rejects(access(path.join(dir, 'daemon.lock')));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+test('rotation journals new bearer and recovers a lost response after overlap expires', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-rotate-')); const controller = new AbortController();
+  const credential = { token: 'a'.repeat(64), pendingToken: 'b'.repeat(64), rotatedAt: 1 }; let attempts = 0;
+  try {
+    await runDaemon({ url: 'https://os.example.com', projects: [{ alias: 'test', cwd: dir, models: ['cursor/model'] }] }, credential, dir, {
+      stopSignal: controller.signal, request: async (op, body) => {
+        if (op === 'rotate') {
+          attempts++; assert.equal(body.token, 'b'.repeat(64));
+          const stored = JSON.parse(await readFile(path.join(dir, 'credential.json'), 'utf8'));
+          assert.equal(stored.pendingToken, body.token);
+          if (attempts === 1) throw Error('old bearer expired');
+          assert.equal(credential.token, body.token); return {};
+        }
+        controller.abort(); return { projects: [] };
+      }, execute: () => { throw Error('must not run'); },
+    });
+    const stored = JSON.parse(await readFile(path.join(dir, 'credential.json'), 'utf8'));
+    assert.equal(stored.token, 'b'.repeat(64)); assert.equal(stored.pendingToken, undefined);
+    assert.equal(attempts, 2); assert.ok(stored.rotatedAt > 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 test('local stop interrupts idle polling within one second', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'pi-daemon-test-')); const sleeps = [];
   try {
@@ -89,6 +110,28 @@ function fakePi(handler) {
   };
 }
 const piArgs = { cwd: '/trusted', model: 'cursor/model', prompt: 'safe test', sessionDir: '/private', cli: '/fake.js' };
+test('session paths reject traversal, absolute paths, Windows reserved names and separators', () => {
+  for (const id of ['../../escape', '..', '/absolute', 'C:\\escape', 'a/b', 'a\\b', 'CON', 'LPT1', 'a.b', ''])
+    assert.throws(() => safeSessionDirectory('/state', id));
+  assert.equal(safeSessionDirectory('/state', 'normal-task'), '/state/sessions/normal-task');
+});
+test('forced abort stops an observed detached child and confirms cleanup', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-tree-')); const pidFile = path.join(dir, 'pid');
+  const controller = new AbortController(); let pid;
+  try {
+    const result = runPi({ ...piArgs, cwd: dir, cli: fileURLToPath(new URL('./fake-detached-cli.mjs', import.meta.url)),
+      env: { ...process.env, TEST_PID_FILE: pidFile }, signal: controller.signal, abortGraceMs: 100 });
+    for (let i = 0; i < 100; i++) {
+      try { pid = Number(await readFile(pidFile, 'utf8')); break; } catch { await new Promise(r => setTimeout(r, 20)); }
+    }
+    assert.ok(pid); await new Promise(r => setTimeout(r, 150)); controller.abort();
+    assert.equal((await result).status, 'uncertain');
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  } finally {
+    controller.abort(); if (pid) try { process.kill(pid, 'SIGKILL'); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test('native Pi RPC waits for settled, not agent_end, and keeps model out of global settings', async () => {
   const commands = [];
   const result = await runPi({ ...piArgs, launch: fakePi((cmd, emit) => {

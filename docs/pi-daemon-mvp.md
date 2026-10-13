@@ -1,6 +1,6 @@
 # Outbound Pi daemon MVP
 
-Production rollout is verified for one Mac: the private Worker queue, dedicated Access service transport, owner kanban board, workspace/project/agent settings and login service are deployed. Native Pi/Cursor inference, agent instructions, result review and persistence have been verified without file operations. The existing GitHub connection can list/search repositories and persist a project association. **Windows native execution, live OS-agent approval integration and production cancellation remain untested.** The existing Mac human console and Multica installation are unchanged. This runbook describes the supported setup; rollout-specific versions and evidence belong in the operator's private deployment record.
+Production rollout is verified for one Mac: the private Worker queue, dedicated Access service transport, owner kanban board, workspace/project/agent settings and login service are deployed. Native Pi/Cursor inference, agent instructions, result review and persistence have been verified without file operations. The existing GitHub connection can list/search repositories and persist a project association. **Windows native execution, live OS-agent approval integration and production cancellation remain untested.** The legacy Mac human console is retired: its unauthenticated loopback execution ports must remain stopped. Multica is unchanged. This runbook describes the supported setup; rollout-specific versions and evidence belong in the operator's private deployment record.
 
 ## Reference and scope
 
@@ -54,10 +54,16 @@ The human owner portal is a separate authenticated approval surface. `submit` re
 Enable only after a separate production mutation review:
 
 ```jsonc
-"piDaemon": { "enabled": true, "accessAudience": "<64-hex-device-app-aud>" }
+"piDaemon": { "enabled": true, "accessAudience": "<64-hex-device-app-aud>", "serviceIdentity": "<dedicated-service-client-id>.access" }
 ```
 
 This adds `PI_COORDINATOR` and migration `pi-daemon-v1` for `PiCoordinator` / `PiProjectGatekeeper` in the existing private Custom Worker. Old `CustomGatekeeper`, existing KV/R2 and GitHub connection remain unchanged. Disabled/default configurations emit no daemon binding or migration.
+
+Security controls: the Worker pins the device assertion's `common_name` to `serviceIdentity` and applies a 120 requests/minute identity limiter. The binding must exist when device Access is configured; absence fails closed. The Cloudflare limiter is distributed and is not a strict global billing cap. Pending Pi actions are limited to 20 per project facet before persistence. Task IDs are restricted to ASCII alphanumeric, underscore and hyphen, at most 64 characters; local session paths also reject Windows reserved names and escaping symlinks.
+
+Device bearers expire after 90 days, with the updated daemon rotating every 30 days (including long-running idle services). Legacy devices receive a bounded 90-day migration window on their first authenticated request. Rotation journals a proposed secret locally before submitting and allows a ten-minute old-token overlap. Lost responses retry the same proposed secret; after overlap expires the daemon can confirm using that journaled new bearer. Keep credential files private. A device offline beyond expiry needs owner revocation and local re-pairing; never copy bearer secrets between PCs. The separate Access service token still requires manual renewal before its own expiration.
+
+On POSIX, process identities and descendants are sampled during execution, then frozen, killed and checked before completion. An unconfirmed cleanup is `uncertain` and quarantines the device. This covers observed detached Pi shells, not malicious native code that double-forks between samples. Windows uses `taskkill /T /F`, with failure also quarantined; a Windows Job Object or VM is still required for stronger confinement. Neither implementation is a sandbox.
 
 Device requests do **not** magically pass the existing interactive Cloudflare Access policy. They use only `/gatekeeper/custom/runner/device/*`; the owner portal, task management, pairing-code creation and revocation remain outside that path, under the original owner Access application/audience. The old unprefixed device endpoints return 404.
 

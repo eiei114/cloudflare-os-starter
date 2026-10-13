@@ -37,6 +37,8 @@ catalog:
   zod: ^4.6.5
 
 overrides:
+  nanoid@3: 3.3.18
+  source-map-js: 1.2.2
   '@cloudflare/vitest-pool-workers>miniflare': "catalog:"
   '@cloudflare/vitest-pool-workers>wrangler': "catalog:"
   # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the

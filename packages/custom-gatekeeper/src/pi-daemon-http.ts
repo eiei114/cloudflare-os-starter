@@ -6,6 +6,8 @@ import { githubCatalog, repoName } from './github-projects.js';
 export type DaemonEnv = PiConsoleEnv & {
   PI_DAEMON_ENABLED?: boolean;
   PI_DAEMON_ACCESS_AUD?: string;
+  PI_DAEMON_SERVICE_ID?: string;
+  PI_REQUEST_LIMITER?: RateLimit;
   PI_COORDINATOR?: DurableObjectNamespace<PiCoordinator>;
   WORKSHOP_BACKEND?: Fetcher;
 };
@@ -29,7 +31,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
   const path = url.pathname.slice(prefix.length);
   const isDevice = path.startsWith('device/');
   const op = isDevice ? path.slice('device/'.length) : path;
-  const deviceOps = ['pair', 'catalog', 'claim', 'heartbeat', 'finish'];
+    const deviceOps = ['pair', 'catalog', 'claim', 'heartbeat', 'finish', 'rotate'];
   const ownerOps = ['', 'pair-code', 'inventory', 'revoke', 'tasks', 'task', 'submit', 'cancel', 'review',
     'management', 'workspace-save', 'managed-project-save', 'agent-save', 'github-repos'];
   if (!(isDevice ? deviceOps : ownerOps).includes(op)) return json({ error: 'Not found' }, 404);
@@ -37,6 +39,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
   let phase = 'authentication';
   try {
     let auth: { owner?: boolean; hash?: string } = {};
+    let identity = 'local-test';
     if (!isDevice) {
       if (!env.CF_ACCESS_ISS || !env.CF_ACCESS_AUD || !env.ADMINS?.length ||
           (op !== '' && req.headers.get('origin') !== env.PUBLIC_BASE_URL) ||
@@ -49,6 +52,7 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
         algorithms: ['RS256'], requiredClaims: ['exp', 'iat', 'email'] });
       if (typeof payload.email !== 'string' || !env.ADMINS.includes(payload.email)) return json({ error: 'Owner only' }, 403);
       auth = { owner: true };
+      identity = `owner:${payload.email}`;
     } else {
       // Pair is one-use, high-entropy authentication; all other calls require the device credential.
       if (req.headers.get('origin')) return json({ error: 'Browser origin forbidden' }, 403);
@@ -64,8 +68,9 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
         const issuer = env.CF_ACCESS_ISS.replace(/\/$/, '');
         const { payload } = await jwtVerify(assertion, accessKeys(issuer), { issuer, audience: env.PI_DAEMON_ACCESS_AUD,
           algorithms: ['RS256'], requiredClaims: ['exp', 'iat', 'common_name'] });
-        if (typeof payload.common_name !== 'string' || !payload.common_name || payload.email !== undefined)
+        if (!env.PI_DAEMON_SERVICE_ID || payload.common_name !== env.PI_DAEMON_SERVICE_ID || payload.email !== undefined)
           return json({ error: 'Service identity required' }, 403);
+        identity = `service:${payload.common_name}`;
       } else if (cookie) return json({ error: 'Browser cookies forbidden' }, 403);
       if (op !== 'pair') {
         const token = req.headers.get('authorization')?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
@@ -73,6 +78,10 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
         auth.hash = await digest(token);
       }
     }
+    // Production Access configuration must have a limiter. Never silently fail open.
+    if (!env.PI_REQUEST_LIMITER && env.PI_DAEMON_ACCESS_AUD) return json({ error: 'Rate limiter unavailable' }, 503);
+    if (env.PI_REQUEST_LIMITER && !(await env.PI_REQUEST_LIMITER.limit({ key: identity })).success)
+      return json({ error: 'Request limit exceeded' }, 429);
     if (op === '') return portal();
     phase = 'body';
     if (req.headers.get('content-type') !== 'application/json') return json({ error: 'JSON required' }, 415);
@@ -110,6 +119,10 @@ export async function fetchPiDaemon(req: Request, env: DaemonEnv): Promise<Respo
       const result = await callCoordinator(env, op, { codeHash: await digest(data.code),
         id: crypto.randomUUID(), tokenHash: await digest(token) }, {});
       return json({ ...result, token });
+    }
+    if (op === 'rotate') {
+      if (typeof data.token !== 'string' || !/^[a-f0-9]{64}$/.test(data.token)) return json({ error: 'Invalid rotation' }, 400);
+      return json(await callCoordinator(env, 'rotate', { tokenHash: await digest(data.token) }, auth));
     }
     if (op === 'submit') {
       // Human-only approval surface, not an agent API or device capability.

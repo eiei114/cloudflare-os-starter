@@ -249,10 +249,13 @@ test('daemon is opt-in, adds isolated DOs, and never alters Pi console or old re
   assert.equal(disabled.customGatekeeper.vars!.PI_DAEMON_ENABLED, undefined);
   assert.equal(disabled.customGatekeeper.durable_objects?.bindings.some(b => b.name === 'PI_COORDINATOR'), undefined);
   assert.equal(disabled.customGatekeeper.services?.some(s => s.binding === 'WORKSHOP_BACKEND'), undefined);
-  config.piDaemon = { enabled: true, accessAudience: 'a'.repeat(64) };
+  config.piDaemon = { enabled: true, accessAudience: 'a'.repeat(64), serviceIdentity: 'dedicated.access' };
   const enabled = generateConfigs(config, bases);
   assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_ENABLED, true);
   assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_ACCESS_AUD, 'a'.repeat(64));
+  assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_SERVICE_ID, 'dedicated.access');
+  assert.deepEqual(enabled.customGatekeeper.ratelimits, [{ name: 'PI_REQUEST_LIMITER', namespace_id: '1001', simple: { limit: 120, period: 60 } }]);
+  assert.throws(() => validateConfig({ ...config, piDaemon: { enabled: true, accessAudience: 'a'.repeat(64) } }));
   assert.equal(enabled.customGatekeeper.vars!.CF_ACCESS_AUD, validConfig.access.audience);
   assert.throws(() => validateConfig({ ...config, piDaemon: { enabled: true, accessAudience: 'not-an-aud' } }));
   assert.deepEqual(enabled.customGatekeeper.durable_objects?.bindings, [{ name: 'PI_COORDINATOR', class_name: 'PiCoordinator' }]);

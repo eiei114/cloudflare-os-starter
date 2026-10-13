@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, open, unlink, realpath, stat, access } from 'n
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import { runPi } from './pi-process.mjs';
@@ -96,6 +96,25 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
   const receiptFile = path.join(dir, 'receipt.json');
   let current;
   try {
+    // Journal the proposed secret before sending. A lost response retries the same rotation,
+    // with the old bearer valid for a bounded ten-minute overlap on the server.
+    const rotateCredential = async () => {
+    if (credential.token && (credential.pendingToken || !credential.rotatedAt || Date.now() - credential.rotatedAt >= 30 * 86400_000)) {
+      credential.pendingToken ??= randomBytes(32).toString('hex');
+      await writePrivate(path.join(dir, 'credential.json'), credential);
+      try { await request('rotate', { token: credential.pendingToken }); }
+      catch {
+        // If the response was lost and overlap expired, try the already-journaled new
+        // bearer. Do not discard either credential until the server confirms rotation.
+        const old = credential.token; credential.token = credential.pendingToken;
+        try { await request('rotate', { token: credential.pendingToken }); }
+        finally { credential.token = old; }
+      }
+      credential.token = credential.pendingToken; delete credential.pendingToken;
+      credential.rotatedAt = Date.now(); await writePrivate(path.join(dir, 'credential.json'), credential);
+    }
+    };
+    await rotateCredential();
     let recovered; try { recovered = JSON.parse(await readFile(receiptFile, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     if (recovered) {
       if (!recovered.report) throw new Error('Interrupted execution. Inspect local Pi process/session before re-pairing; never replay.');
@@ -109,6 +128,7 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
       if (await access(path.join(dir, 'stop.request')).then(() => true, () => false)) break;
       let task; const claimStarted = Date.now();
       try {
+        await rotateCredential();
         // claim already updates lastSeen, so an additional idle heartbeat is redundant.
         ({ task } = await request('claim', { attempt: randomUUID() }));
         retryMs = 5000;
@@ -118,6 +138,8 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
         continue; // idle reconnect never executes or replays a job
       }
       if (!task) { await waitForPoll(30_000, dir, stopSignal, pause); continue; }
+      // Validate untrusted cloud identifiers before writing a receipt or creating directories.
+      const sessionDir = safeSessionDirectory(dir, task.id);
       const project = config.projects.find(p => p.alias === task.alias && p.models.includes(task.model));
       if (!project) throw new Error('Claimed project/model not allowed locally');
       const receipt = { id: task.id, attempt: task.attempt };
@@ -142,7 +164,11 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
       })();
       let outcome;
       try {
-        const sessionDir = path.join(dir, 'sessions', task.id); await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+        await mkdir(path.join(dir, 'sessions'), { recursive: true, mode: 0o700 });
+        const root = await realpath(path.join(dir, 'sessions'));
+        if (root !== path.join(await realpath(dir), 'sessions')) throw new Error('Session root symlink escapes state');
+        await mkdir(sessionDir, { recursive: true, mode: 0o700 });
+        if (path.dirname(await realpath(sessionDir)) !== root) throw new Error('Session symlink escapes state');
         outcome = await execute({ cwd: project.cwd, model: task.model, prompt: task.prompt, sessionDir,
           env: localEnv, signal: controller.signal, progress: value => { progress = value; } });
       } catch { outcome = { status: 'uncertain', result: 'Execution interrupted; inspect local session.' }; }
@@ -153,6 +179,14 @@ export async function runDaemon(config, credential, dir, { execute = runPi, stop
       if (outcome.status === 'uncertain') throw new Error('Uncertain execution: device quarantined; inspect locally before re-pairing');
     }
   } finally { current?.abort(); await unlink(lockFile); }
+}
+
+export function safeSessionDirectory(dir, id) {
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(id))
+    throw new Error('Invalid task ID');
+  const root = path.resolve(dir, 'sessions'), target = path.resolve(root, id);
+  if (path.dirname(target) !== root) throw new Error('Session path escapes state');
+  return target;
 }
 
 async function main() {

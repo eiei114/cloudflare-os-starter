@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { trackProcessTree } from './process-tree.mjs';
 
 /** Dedicated RPC process; normal profile and trusted project, never cloud-supplied argv/env. */
 export function runPi({ cwd, model, prompt, sessionDir, signal, progress = () => {},
@@ -14,6 +15,7 @@ export function runPi({ cwd, model, prompt, sessionDir, signal, progress = () =>
   });
   let stopped = false, settled = false, finished = false, lastReason, text = '', stoppingTimer;
   const pending = new Map(); let seq = 0;
+  const cleanupTree = child.pid && process.platform !== 'win32' ? trackProcessTree(child.pid) : undefined;
   const lines = createInterface({ input: child.stdout });
   const send = (type, extra = {}) => {
     const id = `${++seq}`;
@@ -25,10 +27,11 @@ export function runPi({ cwd, model, prompt, sessionDir, signal, progress = () =>
       });
     });
   };
-  const terminate = () => {
+  const terminate = async () => {
     if (process.platform === 'win32') {
-      if (child.pid) spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-    } else if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
+      if (child.pid) return spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).status === 0;
+    } else if (cleanupTree) return cleanupTree();
+    return true;
   };
   let finish;
   const result = new Promise(resolve => { finish = (status, resultText = '') => {
@@ -36,8 +39,10 @@ export function runPi({ cwd, model, prompt, sessionDir, signal, progress = () =>
     clearTimeout(stoppingTimer); clearTimeout(runtimeTimer);
     signal?.removeEventListener('abort', stop); lines.close();
     for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error('Pi ended')); }
-    pending.clear(); terminate();
-    resolve({ status, result: Buffer.from(resultText).subarray(0, 31_990).toString('utf8') });
+    pending.clear();
+    void terminate().then(confirmed => resolve({ status: confirmed ? status : 'uncertain',
+      result: confirmed ? Buffer.from(resultText).subarray(0, 31_990).toString('utf8') : 'Process cleanup unconfirmed; device quarantined.' }))
+      .catch(() => resolve({ status: 'uncertain', result: 'Process cleanup failed; device quarantined.' }));
   }; });
   const stop = () => {
     if (stopped || finished) return; stopped = true; progress('stopping');

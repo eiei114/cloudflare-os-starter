@@ -17,6 +17,14 @@ export class PiTestParent extends DurableObject {
     }));
     const queue = new TestQueue() as unknown as RpcStub<ApprovalQueue>;
     const project = await facet.startSession(queue);
+    if (mode === 'limit') {
+      for (let i = 0; i < 20; i++) await project.submitTask({ prompt: 'bounded test' });
+      let denied = false;
+      try { await project.submitTask({ prompt: 'overflow' }); } catch (e) { denied = String(e).includes('Pending Pi action limit'); }
+      await facet.rejectAction(1);
+      await project.submitTask({ prompt: 'recovered slot' });
+      return JSON.stringify({ denied, recovered: true });
+    }
     const task = await project.submitTask({ prompt: 'safe test prompt' });
     const before = await task.getStatus();
     if (mode === 'cancel-first') { await task.cancel(); await facet.applyAction(2, queue as any); await facet.applyAction(1, queue as any); }

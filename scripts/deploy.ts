@@ -218,6 +218,8 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     if (config.piDaemon.enabled && config.access.admins.length !== 1) throw new Error('Pi daemon MVP requires one owner and an owner-only Access policy.');
     if (config.piDaemon.accessAudience !== undefined && !/^[a-f0-9]{64}$/.test(config.piDaemon.accessAudience))
       throw new Error('Pi daemon device Access audience must be an exact AUD tag.');
+    if (config.piDaemon.accessAudience && !config.piDaemon.serviceIdentity)
+      throw new Error('piDaemon.serviceIdentity must bind the dedicated Access service client ID.');
   }
   if (config.piRunner) {
     if (typeof config.piRunner.enabled !== 'boolean') throw new Error('piRunner.enabled must be boolean.');
@@ -626,6 +628,8 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       CF_ACCESS_ISS: config.access.issuer, CF_ACCESS_AUD: config.access.audience,
       ADMINS: config.access.admins, PUBLIC_BASE_URL: origin });
     if (config.piDaemon.accessAudience) customGatekeeper.vars.PI_DAEMON_ACCESS_AUD = config.piDaemon.accessAudience;
+    if (config.piDaemon.serviceIdentity) customGatekeeper.vars.PI_DAEMON_SERVICE_ID = config.piDaemon.serviceIdentity;
+    customGatekeeper.ratelimits = [{ name: 'PI_REQUEST_LIMITER', namespace_id: '1001', simple: { limit: 120, period: 60 } }];
     customGatekeeper.durable_objects = { bindings: [
       ...(customGatekeeper.durable_objects?.bindings ?? []), { name: 'PI_COORDINATOR', class_name: 'PiCoordinator' },
     ] };

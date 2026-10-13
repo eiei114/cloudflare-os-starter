@@ -18,6 +18,30 @@ function enqueue(s: CoordinatorState, projectId: string, id = 'task') {
   return transition(s, 'enqueue', { id, projectId, prompt: 'safe test', model: 'cursor/model' }, owner, 4);
 }
 describe('daemon state protocol', () => {
+  it('rejects path-like task IDs at enqueue', () => {
+    const { s, projectId } = setup();
+    for (const id of ['../../escape', '/tmp/path', 'a\\b', '..', 'a.b', ''])
+      expect(() => enqueue(s, projectId, id)).toThrow('Invalid task ID');
+    expect(s.tasks).toHaveLength(0);
+  });
+  it('expires bearer credentials, rotates with bounded overlap and hides previous hashes', () => {
+    const { s, auth } = setup();
+    const next = 'a'.repeat(64), newer = 'b'.repeat(64);
+    const expiry = (transition(s, 'rotate', { tokenHash: next }, auth, 10) as any).expiresAt;
+    expect(transition(s, 'rotate', { tokenHash: next }, auth, 11)).toEqual({ expiresAt: expiry });
+    expect(() => transition(s, 'rotate', { tokenHash: newer }, auth, 12)).toThrow('Stale rotation');
+    expect(() => transition(s, 'heartbeat', {}, auth, 600_010)).toThrow('authentication');
+    expect(transition(s, 'heartbeat', {}, { hash: next }, 600_011)).toEqual({});
+    const inventory = transition(s, 'inventory', {}, owner, 600_012) as any;
+    expect(inventory.devices[0]).not.toHaveProperty('previousHash');
+    expect(inventory.devices[0]).not.toHaveProperty('tokenHash');
+    expect(() => transition(s, 'heartbeat', {}, { hash: next }, expiry)).toThrow('expired');
+  });
+  it('bounds pending Pi actions before queue submission', async () => {
+    const { projectId } = await pairedProject();
+    const result = JSON.parse(await testEnv.PI_TEST_PARENT.getByName(crypto.randomUUID()).scenario(projectId, 'limit'));
+    expect(result).toEqual({ denied: true, recovered: true });
+  });
   it('migrates legacy catalog into a stable workspace without widening execution authority', () => {
     const { s, projectId, auth } = setup();
     const before = JSON.stringify(s.projects);
@@ -260,7 +284,8 @@ describe('owner portal and observation enforcement', () => {
       kid: 'device-service', alg: 'RS256', use: 'sig' }] })));
     const e = { ...testEnv, PI_DAEMON_ENABLED: true, PUBLIC_BASE_URL: 'https://os.example.com',
       CF_ACCESS_ISS: 'https://device-service-test.cloudflareaccess.com', CF_ACCESS_AUD: 'owner-aud',
-      PI_DAEMON_ACCESS_AUD: 'device-aud', ADMINS: ['owner@example.com'] };
+      PI_DAEMON_ACCESS_AUD: 'device-aud', PI_DAEMON_SERVICE_ID: 'dedicated-service',
+      PI_REQUEST_LIMITER: { limit: vi.fn(async () => ({ success: true })) }, ADMINS: ['owner@example.com'] };
     const token = (payload: Record<string, unknown>, aud = e.PI_DAEMON_ACCESS_AUD) => new SignJWT(payload)
       .setProtectedHeader({ alg: 'RS256', kid: 'device-service' }).setIssuer(e.CF_ACCESS_ISS)
       .setAudience(aud).setIssuedAt().setExpirationTime('5m').sign(keys.privateKey);
@@ -270,6 +295,7 @@ describe('owner portal and observation enforcement', () => {
         body: JSON.stringify({ code }) }), e);
     expect((await request())?.status).toBe(401);
     const service = await token({ common_name: 'dedicated-service', type: 'app' });
+    expect((await request(await token({ common_name: 'other-service' })))?.status).toBe(403);
     expect((await request(service, 'owner=browser'))?.status).toBe(403);
     expect((await request(await token({ common_name: 'dedicated-service' }, e.CF_ACCESS_AUD)))?.status).toBe(400);
     expect((await request(await token({ common_name: 'dedicated-service', email: 'owner@example.com' })))?.status).toBe(403);
@@ -279,6 +305,8 @@ describe('owner portal and observation enforcement', () => {
     expect((await request(service, 'CF_Authorization=edge-injected', code))?.status).toBe(200);
     // Cookie alone is never authority, even after successful pairing.
     expect((await request(undefined, 'CF_Authorization=edge-injected', code))?.status).toBe(401);
+    e.PI_REQUEST_LIMITER.limit.mockResolvedValue({ success: false });
+    expect((await request(service))?.status).toBe(429);
   });
   it('checks JWT owner and audience before issuing a code; paired device remains separate', async () => {
     const keys = await generateKeyPair('RS256');

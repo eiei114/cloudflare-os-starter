@@ -17,7 +17,9 @@ export type TaskRecord = {
   reviewedAt?: number;
   workspaceId?: string; managedProjectId?: string; agentId?: string; agentName?: string; agentInstructions?: string; agentRevision?: number;
 };
-type Device = { id: string; label: string; platform: string; tokenHash: string; revoked: boolean; seen: number };
+type Device = { id: string; label: string; platform: string; tokenHash: string; revoked: boolean; seen: number;
+  expiresAt?: number; previousHash?: string; previousUntil?: number };
+const credentialLifetime = 90 * 86400_000;
 export type CoordinatorState = {
   devices: Device[]; projects: Project[]; tasks: TaskRecord[];
   pairs: { hash: string; expires: number; label: string; platform: string }[];
@@ -63,7 +65,7 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
     if (s.devices.length >= 20) throw new Error('Device limit');
     const p = s.pairs.splice(i, 1)[0];
     const d = { id: text(data.id, 64), tokenHash: text(data.tokenHash, 64),
-      label: p.label, platform: p.platform, revoked: false, seen: now };
+      label: p.label, platform: p.platform, revoked: false, seen: now, expiresAt: now + credentialLifetime };
     s.devices.push(d);
     return { deviceId: d.id };
   }
@@ -116,7 +118,7 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       else { if (s.agents!.length >= 40) throw new Error('Agent limit'); s.agents!.push(value); }
       return { id };
     }
-    if (op === 'inventory') return { devices: s.devices.map(({ tokenHash: _, ...d }) => d), projects: s.projects };
+    if (op === 'inventory') return { devices: s.devices.map(({ tokenHash: _, previousHash: __, ...d }) => d), projects: s.projects };
     if (op === 'tasks') return { tasks: s.tasks.toSorted((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
       .map(({ prompt: _, result: __, attempt: ___, leaseUntil: ____, agentInstructions: _____, ...task }) => task) };
     if (op === 'revoke') {
@@ -136,6 +138,8 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       return { ...p, deviceStatus: device.revoked ? 'revoked' : now - device.seen < 45_000 ? 'online' : 'offline', lastSeen: device.seen };
     }
     if (op === 'enqueue') {
+      if (typeof data.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(data.id) ||
+          /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(data.id)) throw new Error('Invalid task ID');
       // Caller supplies a durable id: retrying approval cannot create a second job.
       const prior = s.tasks.find(t => t.id === data.id);
       if (prior) {
@@ -185,8 +189,23 @@ export function transition(s: CoordinatorState, op: string, data: Record<string,
       return status;
     }
   }
-  const d = s.devices.find(candidate => !candidate.revoked && candidate.tokenHash === auth.hash);
+  const d = s.devices.find(candidate => !candidate.revoked &&
+    (candidate.tokenHash === auth.hash || (candidate.previousHash === auth.hash && (candidate.previousUntil ?? 0) > now)));
   if (!d) throw new Error('Device authentication failed');
+  // One-time bounded migration for legacy registrations. New credentials have explicit expiry.
+  d.expiresAt ??= now + credentialLifetime;
+  if (d.expiresAt <= now) throw new Error('Device credential expired; re-pair locally');
+  if (op === 'rotate') {
+    const next = text(data.tokenHash, 64);
+    if (!/^[a-f0-9]{64}$/.test(next)) throw new Error('Invalid rotation');
+    if (next !== d.tokenHash) {
+      if (auth.hash !== d.tokenHash) throw new Error('Stale rotation credential');
+      d.previousHash = d.tokenHash; d.previousUntil = now + 600_000;
+      d.tokenHash = next; d.expiresAt = now + credentialLifetime;
+    }
+    return { expiresAt: d.expiresAt };
+  }
+  if ((d.previousUntil ?? 0) <= now) { delete d.previousHash; delete d.previousUntil; }
   d.seen = now;
   const deviceTasks = s.tasks.filter(t => s.projects.find(p => p.id === t.projectId)?.deviceId === d.id);
   if (op === 'catalog') {
