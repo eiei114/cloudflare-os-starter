@@ -1,0 +1,23 @@
+name: Pi tray native checks
+on:
+  push:
+    paths: ['packages/pi-tray/**', '.github/workflows/pi-tray.yml']
+  pull_request:
+    paths: ['packages/pi-tray/**', '.github/workflows/pi-tray.yml']
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --manifest-path packages/pi-tray/Cargo.toml --check
+      - run: cargo test --manifest-path packages/pi-tray/Cargo.toml --locked
+      - run: cargo clippy --manifest-path packages/pi-tray/Cargo.toml --locked -- -D warnings
+      - run: cargo build --manifest-path packages/pi-tray/Cargo.toml --release --locked

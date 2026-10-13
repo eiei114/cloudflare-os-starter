@@ -10,6 +10,10 @@ export default defineConfig({
       miniflare: {
         compatibilityDate: "2026-08-04",
         compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_compat"],
+        durableObjects: { PI_COORDINATOR: { className: 'PiCoordinator', useSQLite: true },
+          PI_PROJECT_GATEKEEPER: { className: 'PiProjectGatekeeper', useSQLite: true },
+          PI_TEST_PARENT: { className: 'PiTestParent', useSQLite: true } },
+        bindings: { PI_DAEMON_ENABLED: true },
       },
     }),
   ],

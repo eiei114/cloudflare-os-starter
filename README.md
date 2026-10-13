@@ -30,6 +30,8 @@
 
 ## Overview
 
+Optional [outbound Pi daemon MVP](docs/pi-daemon-mvp.md): private single-owner project capabilities backed by a native Mac/Windows Pi host. Opt-in only; production rollout and Windows live verification are separate gates.
+
 This repository adds deployment controls around a pinned [Cloudflare OS](https://github.com/cloudflare/cloudflare-os) release without modifying the upstream source.
 
 | Control | What you own |
@@ -120,6 +122,11 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 | Product behavior unavailable through Worker boundaries | Pinned upstream fork/commit | Yes |
 
 The complete control reference and recipes live in [Customization](docs/customization.md). The upstream [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) covers richer integrations.
+
+This personal fork supports an opt-in [outbound Pi daemon and owner task board](docs/pi-daemon-mvp.md),
+separate from OS chat, plus [native Mac/Windows tray controls](packages/pi-tray/README.md).
+The legacy Mac Pi console is retired. Read the daemon's authentication, local authority,
+billing and deployment-approval requirements before enabling it.
 
 ## Operations and upgrades
 

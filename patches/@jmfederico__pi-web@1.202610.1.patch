@@ -1,0 +1,22 @@
+diff --git a/dist/server/sessions/piSessionService.js b/dist/server/sessions/piSessionService.js
+index 4eada1ca91865e269ac22415a5bf6fbdf1cdfcdf..8f91778105d93f34463dd2956df382b17e8614b0 100644
+--- a/dist/server/sessions/piSessionService.js
++++ b/dist/server/sessions/piSessionService.js
+@@ -5,6 +5,7 @@ import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentS
+ import { projectBrowserMessage } from "../browserMessageProjection.js";
+ import { isSessionMediaId } from "../../shared/sessionMedia.js";
+ import { getBuiltinExtensionFactories } from "./builtinExtensionFactories.js";
++import { createModelRuntimeForAgentDir } from "./authService.js";
+ import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
+ import { clientSessionFirstMessagePreview } from "./clientSessionPreview.js";
+ import { BUILTIN_COMMANDS } from "./builtinCommands.js";
+@@ -433,6 +434,9 @@ export function piWebResourceLoaderOptions(appendSystemPromptSections) {
+ function createDefaultRuntimeFactory(sessionEvents, modelRuntime, sessionManagers, spawn, subsessions, askUser, appendSystemPromptSections = []) {
+     const resourceLoaderOptions = piWebResourceLoaderOptions(appendSystemPromptSections);
+     return async ({ cwd, agentDir, sessionManager, sessionStartEvent, initialModel, initialThinkingLevel, delegationToolsEnabled }) => {
++        // Owner-only fork: session-bound provider closures (e.g. pi-cursor-sdk) must never
++        // use the daemon's bootstrap runtime or replace a sibling session's provider.
++        const modelRuntime = await createModelRuntimeForAgentDir(agentDir);
+         // PI WEB always honors pi's project-trust model. When the workspace ships
+         // trust-requiring resources, trust is resolved exactly once, mirroring the
+         // SDK's flow: the resource loader first loads the pre-trust extension set

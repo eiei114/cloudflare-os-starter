@@ -98,6 +98,62 @@ function sharingDomain(generated: GeneratedConfigs): unknown {
     .find((service) => service.binding === "GATEKEEPER_CONTEXT")!.props!.sharingDomain;
 }
 
+test("retains existing GitHub RPC and HTTP bindings without adding example integrations", async () => {
+  const config = structuredClone(validConfig);
+  config.customGatekeeper.enabled = false;
+  config.existingGatekeepers = [{ id: "github", service: "existing-github" }];
+  const generated = generateConfigs(config, await baseConfigs());
+  assert.deepEqual(generated.router.services!.find((s) => s.binding === "GATEKEEPER_GITHUB"), {
+    binding: "GATEKEEPER_GITHUB", service: "existing-github",
+  });
+  assert.deepEqual(generated.workshop.services!.find((s) => s.binding === "GATEKEEPER_GITHUB"), {
+    binding: "GATEKEEPER_GITHUB", service: "existing-github", entrypoint: "GatekeeperVendor",
+  });
+  for (const worker of [generated.router, generated.workshop]) {
+    assert.equal(worker.services!.some((s) => s.binding === "GATEKEEPER_CUSTOM"), false);
+  }
+  assert.equal(buildCommands(config).some((c) => c.args.includes("custom-gatekeeper")), false);
+});
+
+test("Pi console is opt-in, owner-authenticated and requires a separate proxy secret", async () => {
+  const base = await baseConfigs();
+  const disabled = generateConfigs(validConfig, base);
+  assert.equal(disabled.customGatekeeper.vars!.PI_RUNNER_URL, undefined);
+  const config = variant(c => { c.piRunner = { enabled: true, url: "https://private-tunnel.example" }; });
+  const enabled = generateConfigs(config, base);
+  assert.equal(enabled.customGatekeeper.vars!.PI_RUNNER_URL, "https://private-tunnel.example");
+  assert.equal(enabled.customGatekeeper.vars!.PUBLIC_BASE_URL, "https://os.example.com");
+  assert.equal(enabled.customGatekeeper.vars!.CF_ACCESS_ISS, config.access.issuer);
+  assert.equal(enabled.customGatekeeper.vars!.CF_ACCESS_AUD, config.access.audience);
+  assert.deepEqual(enabled.customGatekeeper.vars!.ADMINS, config.access.admins);
+  assert.ok(enabled.customGatekeeper.secrets!.required.includes("PI_RUNNER_TOKEN"));
+  assert.equal(JSON.stringify(enabled).includes("CURSOR_API_KEY"), false);
+  for (const url of ["http://example.com", "https://example.com/path", "https://u:p@example.com", "https://example.com?q=1"]) {
+    assert.throws(() => validateConfig(variant(c => { c.piRunner = { enabled: true, url }; })));
+  }
+  assert.throws(() => validateConfig(variant(c => {
+    c.piRunner = { enabled: true, url: "https://example.com" }; c.customGatekeeper.enabled = false;
+  })));
+});
+
+test("rejects malformed and conflicting retained Gatekeepers", () => {
+  for (const existingGatekeepers of [
+    {},
+    [null],
+    [{ id: "context", service: "existing-github" }],
+    [{ id: "GITHUB", service: "existing-github" }],
+    [{ id: "github", service: "bad/name" }],
+    [{ id: "github", service: validConfig.workers.workshop.name }],
+    [{ id: "github", service: "existing-github" }, { id: "github", service: "other-github" }],
+    [{ id: "github", service: "existing-github" }, { id: "gitlab", service: "existing-github" }],
+  ]) {
+    assert.throws(() => validateConfig(variant((c) => { c.existingGatekeepers = existingGatekeepers; })),
+      /existingGatekeepers|Existing Gatekeeper/);
+  }
+  assert.throws(() => validateConfig(variant((c) => { c.customGatekeeper.enabled = "false"; })),
+    /customGatekeeper.enabled/);
+});
+
 test("rejects deployment placeholders", () => {
   assert.throws(
     () => validateConfig(variant((c) => { c.accountId = "<CLOUDFLARE_ACCOUNT_ID>"; })),
@@ -184,6 +240,31 @@ test("rejects malformed AI Gateway providers and account", () => {
   assert.throws(
     () => validateConfig(variant((c) => { c.aiGateway.accountId = "not-an-account"; })),
     /aiGateway.accountId must be null or 32 hexadecimal/i);
+});
+
+test('daemon is opt-in, adds isolated DOs, and never alters Pi console or old resources', async () => {
+  const config = structuredClone(validConfig);
+  const bases = await baseConfigs();
+  const disabled = generateConfigs(config, bases);
+  assert.equal(disabled.customGatekeeper.vars!.PI_DAEMON_ENABLED, undefined);
+  assert.equal(disabled.customGatekeeper.durable_objects?.bindings.some(b => b.name === 'PI_COORDINATOR'), undefined);
+  assert.equal(disabled.customGatekeeper.services?.some(s => s.binding === 'WORKSHOP_BACKEND'), undefined);
+  config.piDaemon = { enabled: true, accessAudience: 'a'.repeat(64), serviceIdentity: 'dedicated.access' };
+  const enabled = generateConfigs(config, bases);
+  assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_ENABLED, true);
+  assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_ACCESS_AUD, 'a'.repeat(64));
+  assert.equal(enabled.customGatekeeper.vars!.PI_DAEMON_SERVICE_ID, 'dedicated.access');
+  assert.deepEqual(enabled.customGatekeeper.ratelimits, [{ name: 'PI_REQUEST_LIMITER', namespace_id: '1001', simple: { limit: 120, period: 60 } }]);
+  assert.throws(() => validateConfig({ ...config, piDaemon: { enabled: true, accessAudience: 'a'.repeat(64) } }));
+  assert.equal(enabled.customGatekeeper.vars!.CF_ACCESS_AUD, validConfig.access.audience);
+  assert.throws(() => validateConfig({ ...config, piDaemon: { enabled: true, accessAudience: 'not-an-aud' } }));
+  assert.deepEqual(enabled.customGatekeeper.durable_objects?.bindings, [{ name: 'PI_COORDINATOR', class_name: 'PiCoordinator' }]);
+  assert.equal(enabled.customGatekeeper.migrations?.at(-1)?.tag, 'pi-daemon-v1');
+  assert.deepEqual(enabled.customGatekeeper.services?.find(s => s.binding === 'WORKSHOP_BACKEND'),
+    { binding: 'WORKSHOP_BACKEND', service: validConfig.workers.workshop.name });
+  assert.deepEqual(enabled.context, disabled.context);
+  assert.deepEqual(enabled.router, disabled.router);
+  assert.deepEqual(enabled.customGatekeeper.secrets, disabled.customGatekeeper.secrets);
 });
 
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
